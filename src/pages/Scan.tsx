@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { decodeAddress, encodeAddress } from '@polkadot/util-crypto'
+import { Scanner } from '@yudiel/react-qr-scanner'
 
 export default function Scan() {
   const navigate = useNavigate()
   const [recipient, setRecipient] = useState<string>('')
   const [code, setCode] = useState<string>('')
   const [error, setError] = useState<string>('')
+  const [showScanner, setShowScanner] = useState<boolean>(false)
   const base58LikeRegex = useMemo(() => /^[1-9A-HJ-NP-Za-km-z]+$/, [])
 
   const validateAddress = (value: string) => {
@@ -84,7 +86,16 @@ export default function Scan() {
             />
           </div>
           <div>
-            <div className="text-sm text-white/70 mb-1">Secret Code（如有）</div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-sm text-white/70">Secret Code（如有）</div>
+              <button
+                type="button"
+                className="text-xs px-2 py-1 rounded-full border border-primary/40 text-primary bg-primary/10 hover:bg-primary/20 transition"
+                onClick={() => setShowScanner(true)}
+              >
+                扫码填入
+              </button>
+            </div>
             <input
               className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 outline-none focus:border-primary/60 font-mono text-sm"
               placeholder="请输入书上的兑换码或扫码得到的 Code"
@@ -101,6 +112,38 @@ export default function Scan() {
           </button>
         </form>
       </div>
+      {showScanner && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowScanner(false)} />
+          <div className="relative w-full max-w-sm rounded-xl border border-white/10 bg-background p-4 space-y-3 shadow-glow">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">扫码获取 Secret Code</div>
+              <button
+                type="button"
+                className="text-xs text-white/60 hover:text-white"
+                onClick={() => setShowScanner(false)}
+              >
+                关闭
+              </button>
+            </div>
+            <div className="rounded-lg overflow-hidden border border-white/10 bg-black/60">
+              <Scanner
+                onScan={(results) => {
+                  const first = Array.isArray(results) ? results[0] : null
+                  const value = first?.rawValue ?? ''
+                  if (value) {
+                    setCode(value)
+                    setShowScanner(false)
+                  }
+                }}
+                onError={() => {}}
+                constraints={{ facingMode: 'environment' }}
+              />
+            </div>
+            <div className="text-xs text-white/60">将摄像头对准书上的二维码，即可自动填入 Code。</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
