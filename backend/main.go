@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -23,27 +25,34 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var (
-	ctx    = context.Background()
-	rdb    *redis.Client
-	client *ethclient.Client
-)
+// Relayer 结构体：管理子钱包的私钥、地址和本地 Nonce
+type Relayer struct {
+	PrivateKey *ecdsa.PrivateKey
+	Address    common.Address
+	Nonce      int64
+	mu         sync.Mutex
+}
 
 type CommonResponse struct {
 	Ok     bool   `json:"ok,omitempty"`
 	Status string `json:"status,omitempty"`
 	TxHash string `json:"txHash,omitempty"`
 	Error  string `json:"error,omitempty"`
-	Role   string `json:"role,omitempty"` // 新增 Role 字段
+	Role   string `json:"role,omitempty"`
 }
 
-type ChartData struct {
-	Date  string `json:"date"`
-	Sales int    `json:"sales"`
-}
+var (
+	ctx            = context.Background()
+	rdb            *redis.Client
+	client         *ethclient.Client
+	relayers       []*Relayer
+	relayerCounter uint64
+	chainID        *big.Int
+)
 
 func main() {
 	godotenv.Load()
+	
 	rdb = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	
 	var err error
@@ -52,161 +61,223 @@ func main() {
 		log.Fatalf("无法连接到 RPC: %v", err)
 	}
 
+	// 初始化 ChainID (例如 Monad: 10143)
+	cidStr := os.Getenv("CHAIN_ID")
+	cInt, _ := strconv.ParseInt(cidStr, 10, 64)
+	chainID = big.NewInt(cInt)
+
+	// 加载并同步所有子钱包
+	loadRelayers()
+
 	router := mux.NewRouter()
 
-	// --- 路由 1: 自动补录型预检接口 (已增加管理员跳转逻辑) ---
-	router.HandleFunc("/secret/verify", func(w http.ResponseWriter, r *http.Request) {
-		codeHash := r.URL.Query().Get("codeHash")
-		address := strings.ToLower(r.URL.Query().Get("address")) 
+	// 基础接口
+	router.HandleFunc("/secret/get-binding", getBindingHandler).Methods("GET")
+	router.HandleFunc("/secret/verify", verifyHandler).Methods("GET")
+	router.HandleFunc("/relay/mint", mintHandler).Methods("POST")
+	router.HandleFunc("/api/v1/stats/sales", statsHandler).Methods("GET")
 
-		// 权限校验：从 .env 获取管理配置
-		adminHash := os.Getenv("ADMIN_CODE_HASH")
-		adminAddr := strings.ToLower(os.Getenv("ADMIN_ADDRESS"))
+	fmt.Printf("[%s] 🚀 鲸鱼金库：完整功能版已启动。监听端口 :8080\n", time.Now().Format("15:04:05"))
+	fmt.Printf("当前已加载子钱包数量: %d\n", len(relayers))
+	log.Fatal(http.ListenAndServe(":8080", cors(router)))
+}
 
-		// 逻辑：如果 Hash 码匹配管理码，且地址是出版社地址 -> 授予 ADMIN 状态
-		if codeHash == adminHash && address == adminAddr {
-			sendJSON(w, http.StatusOK, CommonResponse{
-				Ok:     true, 
-				Status: "ADMIN_ACCESS", 
-				Role:   "publisher",
-			})
-			return
+// --- 核心逻辑：带余额检查的智能轮询 + IP 记录 ---
+
+func executeMintLegacy(destAddr string) (string, error) {
+	// 最多尝试所有钱包一遍
+	for i := 0; i < len(relayers); i++ {
+		idx := atomic.AddUint64(&relayerCounter, 1) % uint64(len(relayers))
+		relayer := relayers[idx]
+
+		relayer.mu.Lock()
+
+		// 1. 检查余额：如果低于 0.01 MON，跳过换下一个
+		balance, _ := client.BalanceAt(ctx, relayer.Address, nil)
+		if balance.Cmp(big.NewInt(10000000000000000)) < 0 { 
+			fmt.Printf("⚠️  [Relayer #%d] 余额不足 (%s)，尝试下一个...\n", idx, relayer.Address.Hex())
+			relayer.mu.Unlock()
+			continue
 		}
 
-		if address != "" {
-			savedAddr, err := rdb.Get(ctx, "bind:"+codeHash).Result()
-			if err == redis.Nil {
-				isUsed, _ := rdb.SIsMember(ctx, "vault:codes:used", codeHash).Result()
-				if isUsed {
-					rdb.Set(ctx, "bind:"+codeHash, address, 0)
-					sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "ALREADY_OWNED"})
-					return
-				}
-			} else if err == nil && strings.ToLower(savedAddr) == address {
-				sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "ALREADY_OWNED"})
-				return
-			}
-		}
-		
-		isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", codeHash).Result()
-		if !isValid {
-			isUsed, _ := rdb.SIsMember(ctx, "vault:codes:used", codeHash).Result()
-			if isUsed {
-				sendJSON(w, http.StatusConflict, CommonResponse{Ok: false, Error: "USED"})
-			} else {
-				sendJSON(w, http.StatusForbidden, CommonResponse{Ok: false, Error: "INVALID"})
-			}
-			return
-		}
-		sendJSON(w, http.StatusOK, CommonResponse{Ok: true})
-	}).Methods("GET")
-
-	// --- 路由 2: 链上铸造接口 ---
-	router.HandleFunc("/relay/mint", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Dest     string `json:"dest"`
-			CodeHash string `json:"codeHash"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "参数错误"})
-			return
-		}
-
-		valid, _ := rdb.SIsMember(ctx, "vault:codes:valid", req.CodeHash).Result()
-		if !valid {
-			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "兑换码无效"})
-			return
-		}
-
-		txHash, err := executeMint(req.Dest)
+		gasPrice, err := client.SuggestGasPrice(ctx)
 		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "铸造失败"})
-			return
+			relayer.mu.Unlock()
+			return "", err
 		}
 
-		pipe := rdb.Pipeline()
-		pipe.SRem(ctx, "vault:codes:valid", req.CodeHash)
-		pipe.SAdd(ctx, "vault:codes:used", req.CodeHash)
-		pipe.Set(ctx, "bind:"+req.CodeHash, req.Dest, 0) 
-		pipe.Exec(ctx)
+		// 2. 构造交易
+		methodID := common.FromHex("6a627842") // mint(address)
+		paddedAddress := common.LeftPadBytes(common.HexToAddress(destAddr).Bytes(), 32)
+		data := append(methodID, paddedAddress...)
 
-		go notifyMatrix(req.Dest, txHash)
-		sendJSON(w, http.StatusOK, CommonResponse{Status: "submitted", TxHash: txHash})
-	}).Methods("POST")
+		tx := types.NewTransaction(
+			uint64(relayer.Nonce),
+			common.HexToAddress(os.Getenv("CONTRACT_ADDR")),
+			big.NewInt(0),
+			uint64(250000), 
+			gasPrice,
+			data,
+		)
 
-	// --- 路由 3: 销量统计接口 ---
-	router.HandleFunc("/api/v1/stats/sales", func(w http.ResponseWriter, r *http.Request) {
-		stats, err := rdb.HGetAll(ctx, "whale_vault:daily_mints").Result()
+		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), relayer.PrivateKey)
 		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "读取统计数据失败"})
-			return
+			relayer.mu.Unlock()
+			return "", err
 		}
 
-		type dailyItem struct {
-			date  string
-			count int
-		}
-		var items []dailyItem
-		for date, countStr := range stats {
-			count, _ := strconv.Atoi(countStr)
-			items = append(items, dailyItem{date: date, count: count})
-		}
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].date < items[j].date
-		})
-
-		var responseData []ChartData
-		totalSales := 0
-		for _, item := range items {
-			totalSales += item.count
-			responseData = append(responseData, ChartData{
-				Date:  item.date,
-				Sales: totalSales,
-			})
-		}
-		sendJSON(w, http.StatusOK, responseData)
-	}).Methods("GET")
-
-	cors := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-			if r.Method == "OPTIONS" {
-				return
+		// 3. 发送交易
+		err = client.SendTransaction(ctx, signedTx)
+		if err != nil {
+			if strings.Contains(err.Error(), "nonce too low") {
+				n, _ := client.PendingNonceAt(ctx, relayer.Address)
+				relayer.Nonce = int64(n)
 			}
-			next.ServeHTTP(w, r)
-		})
+			relayer.mu.Unlock()
+			fmt.Printf("❌ [Relayer #%d] 发送失败: %v\n", idx, err)
+			continue 
+		}
+
+		relayer.Nonce++
+		relayer.mu.Unlock()
+		return signedTx.Hash().Hex(), nil
 	}
 
-	fmt.Printf("[%s] 🚀 鲸鱼金库：管理员跳转功能已就绪 :8080\n", time.Now().Format("15:04:05"))
-	http.ListenAndServe(":8080", cors(router))
+	return "", fmt.Errorf("所有子钱包均余额不足或发送失败")
 }
 
-// executeMint, notifyMatrix, sendJSON 函数保持不变...
-func executeMint(destAddr string) (string, error) {
-	privateKey, _ := crypto.HexToECDSA(os.Getenv("PRIVATE_KEY"))
-	fromAddress := crypto.PubkeyToAddress(privateKey.PublicKey)
-	nonce, _ := client.PendingNonceAt(ctx, fromAddress)
-	gasPrice, _ := client.SuggestGasPrice(ctx)
-	chainID, _ := strconv.Atoi(os.Getenv("CHAIN_ID"))
-	data := append(common.FromHex("6a627842"), common.LeftPadBytes(common.HexToAddress(destAddr).Bytes(), 32)...)
-	tx := types.NewTransaction(nonce, common.HexToAddress(os.Getenv("CONTRACT_ADDR")), big.NewInt(0), 200000, gasPrice, data)
-	signedTx, _ := types.SignTx(tx, types.NewEIP155Signer(big.NewInt(int64(chainID))), privateKey)
-	err := client.SendTransaction(ctx, signedTx)
-	return signedTx.Hash().Hex(), err
+// --- Handler 函数 ---
+
+func mintHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Dest     string `json:"dest"`
+		CodeHash string `json:"codeHash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "参数错误"})
+		return
+	}
+
+	// 获取客户端 IP
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" { clientIP = r.Header.Get("X-Real-IP") }
+	if clientIP == "" { clientIP = strings.Split(r.RemoteAddr, ":")[0] }
+
+	// 原子化销毁有效码
+	removed, _ := rdb.SRem(ctx, "vault:codes:valid", req.CodeHash).Result()
+	if removed == 0 {
+		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "此码已失效或已领取"})
+		return
+	}
+
+	txHash, err := executeMintLegacy(req.Dest)
+	if err != nil {
+		rdb.SAdd(ctx, "vault:codes:valid", req.CodeHash) // 失败归还码
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: err.Error()})
+		return
+	}
+
+	// 成功后：记录 IP、销量和使用状态
+	pipe := rdb.Pipeline()
+	pipe.SAdd(ctx, "vault:codes:used", req.CodeHash)
+	pipe.HIncrBy(ctx, "whale_vault:daily_mints", time.Now().Format("2006-01-02"), 1)
+	
+	// 记录 Mint 详情
+	mintDetail := map[string]interface{}{
+		"ip":      clientIP,
+		"address": req.Dest,
+		"time":    time.Now().Format(time.RFC3339),
+	}
+	pipe.HSet(ctx, "vault:mint_info:"+req.CodeHash, mintDetail)
+	pipe.SAdd(ctx, "vault:reader_ips", clientIP)
+	pipe.Exec(ctx)
+
+	fmt.Printf("✅ [成功] 目标: %s | IP: %s | Tx: %s\n", req.Dest, clientIP, txHash)
+	sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "submitted", TxHash: txHash})
 }
 
-func notifyMatrix(dest, txHash string) {
-	msg := fmt.Sprintf("🎉 鲸鱼金库：新 NFT 铸造！\n地址: %s\n哈希: %s", dest, txHash)
-	url := fmt.Sprintf("%s/_matrix/client/r0/rooms/%s/send/m.room.message?access_token=%s", 
-		os.Getenv("MATRIX_URL"), os.Getenv("MATRIX_ROOM_ID"), os.Getenv("MATRIX_ACCESS_TOKEN"))
-	payload, _ := json.Marshal(map[string]interface{}{"msgtype": "m.text", "body": msg})
-	http.Post(url, "application/json", bytes.NewBuffer(payload))
+func verifyHandler(w http.ResponseWriter, r *http.Request) {
+	h := r.URL.Query().Get("codeHash")
+	a := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("address")))
+	adminAddr := strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_ADDRESS")))
+
+	// 1. 出版社管理员判定
+	if adminAddr != "" && a == adminAddr {
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "ADMIN", Role: "publisher"})
+		return
+	}
+
+	// 2. 作者判定 (从 Redis 集合 vault:authors 中读取)
+	isAuthor, _ := rdb.SIsMember(ctx, "vault:authors", a).Result()
+	if isAuthor {
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "AUTHOR", Role: "author"})
+		return
+	}
+
+	// 3. 合法读者判定
+	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
+	if isValid {
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "VALID_READER", Role: "reader"})
+		return
+	}
+
+	sendJSON(w, http.StatusForbidden, CommonResponse{Ok: false, Error: "INVALID_CODE"})
+}
+
+func getBindingHandler(w http.ResponseWriter, r *http.Request) {
+	h := r.URL.Query().Get("codeHash")
+	mapping, err := rdb.HGetAll(ctx, "vault:bind:"+h).Result()
+	if err != nil || len(mapping) == 0 {
+		sendJSON(w, http.StatusOK, map[string]string{"address": ""})
+		return
+	}
+	sendJSON(w, http.StatusOK, map[string]string{"address": mapping["address"]})
+}
+
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	stats, _ := rdb.HGetAll(ctx, "whale_vault:daily_mints").Result()
+	var keys []string
+	for k := range stats { keys = append(keys, k) }
+	sort.Strings(keys)
+	type Data struct { Date string `json:"date"`; Sales int `json:"sales"` }
+	var result []Data
+	total := 0
+	for _, k := range keys {
+		c, _ := strconv.Atoi(stats[k])
+		total += c
+		result = append(result, Data{Date: k, Sales: total})
+	}
+	sendJSON(w, http.StatusOK, result)
+}
+
+func loadRelayers() {
+	count, _ := strconv.Atoi(os.Getenv("RELAYER_COUNT"))
+	for i := 0; i < count; i++ {
+		keyHex := os.Getenv(fmt.Sprintf("PRIVATE_KEY_%d", i))
+		if keyHex == "" { continue }
+		priv, _ := crypto.HexToECDSA(keyHex)
+		r := &Relayer{
+			PrivateKey: priv,
+			Address:    crypto.PubkeyToAddress(priv.PublicKey),
+		}
+		n, _ := client.PendingNonceAt(ctx, r.Address)
+		r.Nonce = int64(n)
+		relayers = append(relayers, r)
+	}
 }
 
 func sendJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(payload)
+}
+
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" { return }
+		next.ServeHTTP(w, r)
+	})
 }

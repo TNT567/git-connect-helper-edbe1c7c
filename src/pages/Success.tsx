@@ -1,67 +1,70 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { CheckCircle, ShieldCheck, ExternalLink, PartyPopper, Wallet, BookOpen, TrendingUp } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { CheckCircle, ShieldCheck, ExternalLink, PartyPopper, Loader2 } from 'lucide-react';
 
 const Success = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   
+  // 从 URL 获取参数
   const txHash = searchParams.get('txHash');
   const userAddress = searchParams.get('address') || '未知持有人';
+  const codeHash = searchParams.get('codeHash');
+  
+  // 勋章编号逻辑
   const rawTokenId = searchParams.get('token_id');
   const displayTokenId = (!rawTokenId || rawTokenId === '0') ? '最新生成' : `#${rawTokenId}`;
 
   const [isLoading, setIsLoading] = useState(true);
-  const [chartData, setChartData] = useState([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 1. 模拟加载动画
-    const timer = setTimeout(() => setIsLoading(false), 1500);
+    const verifyAndRedirect = async () => {
+      // 如果没有 codeHash，视为直接访问，展示基础 UI
+      if (!codeHash) {
+        setTimeout(() => setIsLoading(false), 1000);
+        return;
+      }
 
-    // 2. 从后端 API 动态获取销量数据
-    fetch('http://198.55.109.102:8080/api/v1/stats/sales')
-      .then(res => {
-        if (!res.ok) throw new Error('网络响应错误');
-        return res.json();
-      })
-      .then(data => {
-        // 确保数据是数组且格式正确
-        setChartData(data);
-      })
-      .catch(err => {
-        console.error("获取统计数据失败:", err);
-      });
+      try {
+        // 请求后端验证接口
+        const response = await fetch(`http://192.168.1.9:8080/secret/verify?codeHash=${codeHash}&address=${userAddress}`);
+        
+        if (!response.ok) {
+          throw new Error('身份核验失败');
+        }
 
-    return () => clearTimeout(timer);
-  }, []);
+        // 普通用户验证成功，给予仪式感延迟后显示 UI
+        setTimeout(() => setIsLoading(false), 1500);
+      } catch (err) {
+        console.error("验证流程异常:", err);
+        setError("身份确权异常，请联系出版社");
+        setIsLoading(false);
+      }
+    };
 
-  // 定义钱包导入逻辑
-  const importToWallet = async () => {
-    if (!window.ethereum) return alert('请先安装 SubWallet 或 MetaMask');
-    try {
-      await window.ethereum.request({
-        method: 'wallet_watchAsset',
-        params: {
-          type: 'ERC721',
-          options: {
-            address: '0x705A0890bFDcD30eaf06b25b9D31a6C5C099100d',
-            tokenId: rawTokenId || '0',
-          },
-        },
-      });
-    } catch (error) {
-      console.error('导入失败', error);
-      alert('无法唤起钱包，请检查插件状态');
-    }
-  };
+    verifyAndRedirect();
+  }, [codeHash, userAddress]);
 
+  // 加载中状态（物理存证同步动效）
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#0f172a] text-white flex flex-col items-center justify-center font-sans">
-        <div className="animate-pulse flex flex-col items-center gap-4">
-          <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-slate-400 font-medium">正在同步物理存证...</p>
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+          <p className="text-slate-400 font-medium animate-pulse">正在同步物理存证...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 错误处理状态
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#0f172a] text-white flex flex-col items-center justify-center p-4">
+        <div className="bg-red-500/10 border border-red-500/50 p-6 rounded-2xl text-center">
+          <p className="text-red-400 font-bold">{error}</p>
+          <button onClick={() => navigate('/')} className="mt-4 text-sm text-slate-400 underline">返回首页</button>
         </div>
       </div>
     );
@@ -71,8 +74,8 @@ const Success = () => {
     <div className="min-h-screen bg-[#0f172a] text-white flex flex-col items-center justify-center p-4 font-sans">
       <div className="max-w-md w-full bg-[#1e293b] border border-slate-700 rounded-3xl p-8 shadow-2xl relative">
         
+        {/* 核心验证成功 UI */}
         <div className="text-center space-y-8 animate-in fade-in zoom-in duration-500">
-          {/* 状态图标 */}
           <div className="flex justify-center">
             <div className="relative">
               <CheckCircle className="w-20 h-20 text-green-500 relative z-10" />
@@ -87,10 +90,10 @@ const Success = () => {
             <p className="text-green-400 font-medium tracking-wide">Whale Vault 访问权限已激活</p>
           </div>
 
-          {/* 资产物理详情卡片 */}
+          {/* 资产详情卡片 */}
           <div className="bg-slate-900/50 rounded-2xl p-6 text-left space-y-4 border border-slate-700/50">
             <div className="space-y-1">
-              <span className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.2em]">物理持有地址</span>
+              <span className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.2em]">持有地址</span>
               <p className="text-xs text-slate-300 font-mono break-all leading-relaxed">{userAddress}</p>
             </div>
             
@@ -104,106 +107,33 @@ const Success = () => {
                 <p className="text-xs text-green-500 font-bold italic">PROVED ON CHAIN</p>
               </div>
             </div>
-
-            <button 
-              onClick={importToWallet}
-              className="mt-2 w-full py-2 flex items-center justify-center gap-2 border border-blue-500/30 text-blue-400 text-xs rounded-xl hover:bg-blue-500/10 transition-all"
-            >
-              <Wallet className="w-4 h-4" /> 将勋章导入钱包私藏
-            </button>
           </div>
 
-          {/* 销量线型图组件 */}
-          {chartData.length > 0 && (
-            <div className="bg-slate-900/40 border border-slate-700/50 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center gap-2 px-1">
-                <TrendingUp className="w-4 h-4 text-blue-400" />
-                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">金库协议 1.0 链上实时销量曲线</span>
-              </div>
-              
-              <div className="h-32 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" />
-                    <XAxis 
-                      dataKey="date" 
-                      hide={true} // 隐藏底部坐标轴保持简洁
-                    />
-                    <YAxis 
-                      hide={true} // 隐藏左侧坐标轴
-                      domain={['dataMin - 5', 'dataMax + 5']} 
-                    />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '10px' }}
-                      itemStyle={{ color: '#60a5fa' }}
-                      labelStyle={{ color: '#94a3b8' }}
-                    />
-                    <Line 
-                      type="monotone" 
-                      dataKey="sales" 
-                      stroke="#3b82f6" 
-                      strokeWidth={3} 
-                      dot={{ fill: '#3b82f6', strokeWidth: 2, r: 3 }}
-                      activeDot={{ r: 5, fill: '#60a5fa' }}
-                      animationDuration={2000}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="flex justify-between px-1">
-                <span className="text-[9px] text-slate-500 font-medium">起始发行</span>
-                <span className="text-[9px] text-slate-500 font-medium">最新数据: {chartData[chartData.length - 1].sales} 份</span>
-              </div>
-            </div>
-          )}
-
-          {/* 操作区 */}
-          <div className="space-y-3">
-            <button 
-              onClick={() => window.location.href = 'https://matrix.to/#/!jOcJpAxdUNYvaMZuqJ:matrix.org?via=matrix.org'} 
-              className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-2xl font-bold transition-all shadow-lg active:scale-95"
-            >
-              立即进入私域频道
-            </button>
-
-            <button 
-              onClick={() => window.open('https://xmnw3y5jxoataadrf5uz6kd4fzb4jlbk7a6feyvjrdij2zy3zqja.arweave.net/uxtt46m7gTAAcS9pnyh8LkPErCr4PFJiqYjQnWcbzBI', '_blank')} 
-              className="w-full py-4 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-blue-400 rounded-2xl font-bold transition-all flex items-center justify-center gap-2 group"
-            >
-              <BookOpen className="w-5 h-5 text-blue-400" /> 领取永久存储资料 (Arweave)
-              <ExternalLink className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-            </button>
-          </div>
-
-          {/* Subscan 验证链接 */}
-          <div className="pt-2">
-            <a 
-              href="https://moonbase.subscan.io/token/0x705A0890bFDcD30eaf06b25b9D31a6C5C099100d"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-blue-400/80 hover:text-blue-400 text-[10px] font-bold uppercase tracking-widest transition-colors"
-            >
-              📊 查看全网持有者分布 (Subscan) <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
+          {/* 读者权益出口 */}
+          <button 
+            onClick={() => window.location.href = 'https://matrix.to/#/!jOcJpAxdUNYvaMZuqJ:matrix.org?via=matrix.org'} 
+            className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-2xl font-bold transition-all shadow-lg active:scale-95"
+          >
+            立即进入读者群 (Matrix)
+          </button>
         </div>
 
-        {/* 底部存证链接 */}
+        {/* 链上存证查询 */}
         {txHash && (
           <div className="mt-8 pt-6 border-t border-slate-800 text-center">
             <a 
-              href={`https://moonbase.moonscan.io/tx/${txHash}`}
+              href={`https://testnet-explorer.monad.xyz/tx/${txHash}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-slate-500 hover:text-blue-400 flex items-center justify-center gap-1.5"
             >
-              在 Moonscan 查验物理存证 <ExternalLink className="w-3 h-3" />
+              在 Explorer 查验存证凭据 <ExternalLink className="w-3 h-3" />
             </a>
           </div>
         )}
       </div>
       
-      <p className="mt-6 text-slate-600 text-[10px] tracking-widest font-bold uppercase">Whale Vault • Decentralized Identity System</p>
+      <p className="mt-6 text-slate-600 text-[10px] tracking-widest font-bold uppercase">WHALE VAULT • Decentrailzed Identity System</p>
     </div>
   );
 };
