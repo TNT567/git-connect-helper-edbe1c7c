@@ -24,7 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// --- 缁撴瀯浣撳畾涔?---
+// --- 结构体定义 ---
 
 type Relayer struct {
 	PrivateKey *ecdsa.PrivateKey
@@ -57,7 +57,7 @@ func main() {
 	var err error
 	client, err = ethclient.Dial(os.Getenv("RPC_URL"))
 	if err != nil {
-		log.Fatalf("RPC 杩炴帴澶辫触: %v", err)
+		log.Fatalf("RPC 连接失败: %v", err)
 	}
 
 	cidStr := os.Getenv("CHAIN_ID")
@@ -73,20 +73,21 @@ func main() {
 	r.HandleFunc("/api/v1/analytics/distribution", publisherOnly(distributionHandler)).Methods("GET")
 	r.HandleFunc("/api/v1/stats/sales", publisherOnly(statsHandler)).Methods("GET")
 	
-	// 鏂板锛氬悗鍙伴〉闈㈣闂帶鍒舵帴鍙?	r.HandleFunc("/api/admin/check-access", checkAdminAccessHandler).Methods("GET")
+	// 新增：后台页面访问控制接口
+	r.HandleFunc("/api/admin/check-access", checkAdminAccessHandler).Methods("GET")
 
-	fmt.Println("馃殌 Whale Vault 鍚庣宸插惎鍔細鍑虹増绀剧壒鏉冮€昏緫宸查攣瀹氥€傜鍙?:8080")
+	fmt.Println("🚀 Whale Vault 后端已启动：出版社特权逻辑已锁定。端口 :8080")
 	log.Fatal(http.ListenAndServe("0.0.0.0:8080", cors(r)))
 }
 
-// --- 鏂板锛氬嚭鐗堢ぞ璁块棶鎺у埗涓棿浠?---
+// --- 新增：出版社访问控制中间件 ---
 
 func publisherOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 浠庢煡璇㈠弬鏁拌幏鍙栧湴鍧€
+		// 从查询参数获取地址
 		address := r.URL.Query().Get("address")
 		if address == "" {
-			// 灏濊瘯浠?Authorization header 鑾峰彇
+			// 尝试从 Authorization header 获取
 			authHeader := r.Header.Get("Authorization")
 			if strings.HasPrefix(authHeader, "Bearer ") {
 				address = strings.TrimPrefix(authHeader, "Bearer ")
@@ -95,31 +96,33 @@ func publisherOnly(next http.HandlerFunc) http.HandlerFunc {
 		
 		if address == "" {
 			sendJSON(w, http.StatusUnauthorized, CommonResponse{
-				Error: "闇€瑕佹彁渚涢挶鍖呭湴鍧€杩涜楠岃瘉",
+				Error: "需要提供钱包地址进行验证",
 			})
 			return
 		}
 		
-		// 妫€鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€锛堝拷鐣ュぇ灏忓啓锛?		isPub, err := isPublisherAddress(address)
+		// 检查是否是出版社地址（忽略大小写）
+		isPub, err := isPublisherAddress(address)
 		if err != nil {
 			sendJSON(w, http.StatusInternalServerError, CommonResponse{
-				Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?,
+				Error: "服务器内部错误",
 			})
 			return
 		}
 		
 		if !isPub {
 			sendJSON(w, http.StatusForbidden, CommonResponse{
-				Error: "浠呴檺鍑虹増绀捐闂鍔熻兘",
+				Error: "仅限出版社访问此功能",
 			})
 			return
 		}
 		
-		// 鏄嚭鐗堢ぞ锛岀户缁鐞?		next(w, r)
+		// 是出版社，继续处理
+		next(w, r)
 	}
 }
 
-// --- 鏂板锛氭鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€锛堝拷鐣ュぇ灏忓啓锛?---
+// --- 新增：检查是否是出版社地址（忽略大小写） ---
 
 func isPublisherAddress(address string) (bool, error) {
 	members, err := rdb.SMembers(ctx, "vault:roles:publishers").Result()
@@ -136,35 +139,35 @@ func isPublisherAddress(address string) (bool, error) {
 	return false, nil
 }
 
-// --- 鏂板锛氬悗鍙拌闂鏌ユ帴鍙?---
+// --- 新增：后台访问检查接口 ---
 
 func checkAdminAccessHandler(w http.ResponseWriter, r *http.Request) {
 	address := r.URL.Query().Get("address")
 	if address == "" {
 		sendJSON(w, http.StatusBadRequest, CommonResponse{
-			Error: "闇€瑕佹彁渚涢挶鍖呭湴鍧€",
+			Error: "需要提供钱包地址",
 		})
 		return
 	}
 	
-	// 妫€鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€
+	// 检查是否是出版社地址
 	isPub, err := isPublisherAddress(address)
 	if err != nil {
 		sendJSON(w, http.StatusInternalServerError, CommonResponse{
-			Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?,
+			Error: "服务器内部错误",
 		})
 		return
 	}
 	
 	if !isPub {
 		sendJSON(w, http.StatusForbidden, CommonResponse{
-			Error: "浠呴檺鍑虹増绀捐闂悗鍙?,
+			Error: "仅限出版社访问后台",
 		})
 		return
 	}
 	
-	// 杩橀渶瑕佹鏌ユ槸鍚︿娇鐢ㄤ簡鏈夋晥鐨勬縺娲荤爜锛堝彲閫夛級
-	// 杩欓噷鍙互娣诲姞婵€娲荤爜楠岃瘉閫昏緫
+	// 还需要检查是否使用了有效的激活码（可选）
+	// 这里可以添加激活码验证逻辑
 	
 	sendJSON(w, http.StatusOK, CommonResponse{
 		Ok:   true,
@@ -172,7 +175,7 @@ func checkAdminAccessHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- 鏍稿績淇閫昏緫 ---
+// --- 核心修复逻辑 ---
 
 func mintHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -180,36 +183,39 @@ func mintHandler(w http.ResponseWriter, r *http.Request) {
 		CodeHash string `json:"codeHash"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "鍙傛暟鏍煎紡閿欒"})
+		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "参数格式错误"})
 		return
 	}
 	
 	destAddr := strings.ToLower(req.Dest)
 
-	// 銆愮涓€姝ワ細鍖哄垎鍑虹増绀炬縺娲荤爜鍜屾櫘閫氭縺娲荤爜銆?	// 妫€鏌ユ槸鍚︽槸鍑虹増绀炬縺娲荤爜锛堜互"pub_"寮€澶达級
+	// 【第一步：区分出版社激活码和普通激活码】
+	// 检查是否是出版社激活码（以"pub_"开头）
 	if strings.HasPrefix(req.CodeHash, "pub_") {
-		// 楠岃瘉鍑虹増绀炬縺娲荤爜鏄惁鏈夋晥
+		// 验证出版社激活码是否有效
 		isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", req.CodeHash).Result()
 		if !isValid {
-			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏃犳晥鐨勫嚭鐗堢ぞ鍏戞崲鐮?})
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "无效的出版社兑换码"})
 			return
 		}
 		
-		// 妫€鏌ュ湴鍧€鏄惁鏄嚭鐗堢ぞ鍦板潃锛堜娇鐢ㄦ柊鐨勫嚱鏁帮級
+		// 检查地址是否是出版社地址（使用新的函数）
 		isPub, err := isPublisherAddress(destAddr)
 		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?})
+			sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "服务器内部错误"})
 			return
 		}
 		
 		if !isPub {
-			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "姝ゅ厬鎹㈢爜浠呴檺鍑虹増绀句娇鐢?})
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "此兑换码仅限出版社使用"})
 			return
 		}
 		
-		// 鍑虹増绀炬縺娲荤爜浣跨敤鍚庝笉鍒犻櫎锛屼繚鎸佹湁鏁?		// 鍙互灏嗕娇鐢ㄨ褰曡褰曞埌鍙︿竴涓泦鍚堬紝浣嗕笉鍦ㄤ富闆嗗悎涓垹闄?		rdb.SAdd(ctx, "vault:codes:used:publishers", req.CodeHash+":"+destAddr)
+		// 出版社激活码使用后不删除，保持有效
+		// 可以将使用记录记录到另一个集合，但不在主集合中删除
+		rdb.SAdd(ctx, "vault:codes:used:publishers", req.CodeHash+":"+destAddr)
 		
-		fmt.Printf("鍑虹増绀捐闂垚鍔? %s, 婵€娲荤爜: %s銆傝烦杞埌鍚庡彴椤甸潰銆俓n", destAddr, req.CodeHash)
+		fmt.Printf("出版社访问成功: %s, 激活码: %s。跳转到后台页面。\n", destAddr, req.CodeHash)
 		sendJSON(w, http.StatusOK, CommonResponse{
 			Ok:     true,
 			Status: "PUBLISHER_WELCOME",
@@ -218,21 +224,22 @@ func mintHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// 銆愮浜屾锛氭鏌ユ槸鍚︿负鍑虹増绀惧湴鍧€锛堜娇鐢ㄦ櫘閫氭縺娲荤爜鐨勬儏鍐碉級銆?	isPub, err := isPublisherAddress(destAddr)
+	// 【第二步：检查是否为出版社地址（使用普通激活码的情况）】
+	isPub, err := isPublisherAddress(destAddr)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?})
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "服务器内部错误"})
 		return
 	}
 	
 	if isPub {
-		// 鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜锛岀洿鎺ヨ繑鍥炴垚鍔燂紝涓嶆墽琛孧int锛屾縺娲荤爜澶辨晥
+		// 出版社使用普通激活码，直接返回成功，不执行Mint，激活码失效
 		removed, _ := rdb.SRem(ctx, "vault:codes:valid", req.CodeHash).Result()
 		if removed == 0 {
-			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏉冮檺楠岃瘉澶辫触锛氭棤鏁堢殑鍏戞崲鐮佹垨宸茶浣跨敤"})
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "权限验证失败：无效的兑换码或已被使用"})
 			return
 		}
 		
-		fmt.Printf("鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜: %s, 婵€娲荤爜: %s銆傝烦杞埌鍚庡彴椤甸潰銆俓n", destAddr, req.CodeHash)
+		fmt.Printf("出版社使用普通激活码: %s, 激活码: %s。跳转到后台页面。\n", destAddr, req.CodeHash)
 		sendJSON(w, http.StatusOK, CommonResponse{
 			Ok:     true,
 			Status: "PUBLISHER_WELCOME",
@@ -241,17 +248,18 @@ func mintHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 銆愮涓夋锛氳鑰呴€昏緫銆戜笉鏄嚭鐗堢ぞ锛屾墠闇€瑕佹牳閿€婵€娲荤爜骞舵墽琛孧int
+	// 【第三步：读者逻辑】不是出版社，才需要核销激活码并执行Mint
 	removed, _ := rdb.SRem(ctx, "vault:codes:valid", req.CodeHash).Result()
 	if removed == 0 {
-		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏉冮檺楠岃瘉澶辫触锛氭棤鏁堢殑鍏戞崲鐮佹垨宸茶浣跨敤"})
+		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "权限验证失败：无效的兑换码或已被使用"})
 		return
 	}
 
-	// 銆愮鍥涙锛氭墽琛岃鑰?Mint銆?	txHash, err := executeMintLegacy(destAddr)
+	// 【第四步：执行读者 Mint】
+	txHash, err := executeMintLegacy(destAddr)
 	if err != nil {
-		rdb.SAdd(ctx, "vault:codes:valid", req.CodeHash) // 澶辫触鍥炴粴
-		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "閾句笂纭潈澶辫触: " + err.Error()})
+		rdb.SAdd(ctx, "vault:codes:valid", req.CodeHash) // 失败回滚
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "链上确权失败: " + err.Error()})
 		return
 	}
 
@@ -268,28 +276,30 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	h := r.URL.Query().Get("codeHash")
 	
 	if a == "" {
-		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "闇€瑕佹彁渚涘湴鍧€鍙傛暟"})
+		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "需要提供地址参数"})
 		return
 	}
 
-	// 浼樺厛鍒ゅ畾鍑虹増绀撅紙浣跨敤鏂扮殑鍑芥暟锛?	isPub, _ := isPublisherAddress(a)
+	// 优先判定出版社（使用新的函数）
+	isPub, _ := isPublisherAddress(a)
 	if isPub {
-		// 妫€鏌ユ槸鍚︽槸鍑虹増绀句笓鐢ㄦ縺娲荤爜
+		// 检查是否是出版社专用激活码
 		if strings.HasPrefix(h, "pub_") {
-			// 楠岃瘉鍑虹増绀炬縺娲荤爜鏄惁鏈夋晥
+			// 验证出版社激活码是否有效
 			isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
 			if isValid {
 				sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
 				return
 			}
 		} else {
-			// 鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜涔熷厑璁搁獙璇侀€氳繃
-			// 浣嗗疄闄呬娇鐢ㄦ椂浼氬湪mintHandler涓秷鑰?			sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
+			// 出版社使用普通激活码也允许验证通过
+			// 但实际使用时会在mintHandler中消耗
+			sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
 			return
 		}
 	}
 
-	// 鍒ゅ畾浣滆€咃紙蹇界暐澶у皬鍐欙級
+	// 判定作者（忽略大小写）
 	members, _ := rdb.SMembers(ctx, "vault:roles:authors").Result()
 	isAuthor := false
 	for _, member := range members {
@@ -304,7 +314,8 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 璇昏€呴獙璇佹縺娲荤爜姹?	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
+	// 读者验证激活码池
+	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
 	if isValid {
 		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "reader"})
 	} else {
@@ -312,7 +323,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- 杈呭姪鍑芥暟 ---
+// --- 辅助函数 ---
 
 func executeMintLegacy(toAddr string) (string, error) {
 	idx := atomic.AddUint64(&relayerCounter, 1) % uint64(len(relayers))
