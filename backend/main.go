@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -25,7 +24,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Relayer 结构体：管理子钱包的私钥、地址和本地 Nonce
+// --- 缁撴瀯浣撳畾涔?---
+
 type Relayer struct {
 	PrivateKey *ecdsa.PrivateKey
 	Address    common.Address
@@ -52,101 +52,127 @@ var (
 
 func main() {
 	godotenv.Load()
-	
 	rdb = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	
 	var err error
 	client, err = ethclient.Dial(os.Getenv("RPC_URL"))
 	if err != nil {
-		log.Fatalf("无法连接到 RPC: %v", err)
+		log.Fatalf("RPC 杩炴帴澶辫触: %v", err)
 	}
 
-	// 初始化 ChainID (例如 Monad: 10143)
 	cidStr := os.Getenv("CHAIN_ID")
 	cInt, _ := strconv.ParseInt(cidStr, 10, 64)
 	chainID = big.NewInt(cInt)
 
-	// 加载并同步所有子钱包
 	loadRelayers()
 
-	router := mux.NewRouter()
+	r := mux.NewRouter()
+	r.HandleFunc("/secret/get-binding", getBindingHandler).Methods("GET")
+	r.HandleFunc("/secret/verify", verifyHandler).Methods("GET")
+	r.HandleFunc("/relay/mint", mintHandler).Methods("POST")
+	r.HandleFunc("/api/v1/analytics/distribution", publisherOnly(distributionHandler)).Methods("GET")
+	r.HandleFunc("/api/v1/stats/sales", publisherOnly(statsHandler)).Methods("GET")
+	
+	// 鏂板锛氬悗鍙伴〉闈㈣闂帶鍒舵帴鍙?	r.HandleFunc("/api/admin/check-access", checkAdminAccessHandler).Methods("GET")
 
-	// 基础接口
-	router.HandleFunc("/secret/get-binding", getBindingHandler).Methods("GET")
-	router.HandleFunc("/secret/verify", verifyHandler).Methods("GET")
-	router.HandleFunc("/relay/mint", mintHandler).Methods("POST")
-	router.HandleFunc("/api/v1/stats/sales", statsHandler).Methods("GET")
-
-	fmt.Printf("[%s] 🚀 鲸鱼金库：完整功能版已启动。监听端口 :8080\n", time.Now().Format("15:04:05"))
-	fmt.Printf("当前已加载子钱包数量: %d\n", len(relayers))
-	log.Fatal(http.ListenAndServe(":8080", cors(router)))
+	fmt.Println("馃殌 Whale Vault 鍚庣宸插惎鍔細鍑虹増绀剧壒鏉冮€昏緫宸查攣瀹氥€傜鍙?:8080")
+	log.Fatal(http.ListenAndServe("0.0.0.0:8080", cors(r)))
 }
 
-// --- 核心逻辑：带余额检查的智能轮询 + IP 记录 ---
+// --- 鏂板锛氬嚭鐗堢ぞ璁块棶鎺у埗涓棿浠?---
 
-func executeMintLegacy(destAddr string) (string, error) {
-	// 最多尝试所有钱包一遍
-	for i := 0; i < len(relayers); i++ {
-		idx := atomic.AddUint64(&relayerCounter, 1) % uint64(len(relayers))
-		relayer := relayers[idx]
-
-		relayer.mu.Lock()
-
-		// 1. 检查余额：如果低于 0.01 MON，跳过换下一个
-		balance, _ := client.BalanceAt(ctx, relayer.Address, nil)
-		if balance.Cmp(big.NewInt(10000000000000000)) < 0 { 
-			fmt.Printf("⚠️  [Relayer #%d] 余额不足 (%s)，尝试下一个...\n", idx, relayer.Address.Hex())
-			relayer.mu.Unlock()
-			continue
-		}
-
-		gasPrice, err := client.SuggestGasPrice(ctx)
-		if err != nil {
-			relayer.mu.Unlock()
-			return "", err
-		}
-
-		// 2. 构造交易
-		methodID := common.FromHex("6a627842") // mint(address)
-		paddedAddress := common.LeftPadBytes(common.HexToAddress(destAddr).Bytes(), 32)
-		data := append(methodID, paddedAddress...)
-
-		tx := types.NewTransaction(
-			uint64(relayer.Nonce),
-			common.HexToAddress(os.Getenv("CONTRACT_ADDR")),
-			big.NewInt(0),
-			uint64(250000), 
-			gasPrice,
-			data,
-		)
-
-		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), relayer.PrivateKey)
-		if err != nil {
-			relayer.mu.Unlock()
-			return "", err
-		}
-
-		// 3. 发送交易
-		err = client.SendTransaction(ctx, signedTx)
-		if err != nil {
-			if strings.Contains(err.Error(), "nonce too low") {
-				n, _ := client.PendingNonceAt(ctx, relayer.Address)
-				relayer.Nonce = int64(n)
+func publisherOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 浠庢煡璇㈠弬鏁拌幏鍙栧湴鍧€
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			// 灏濊瘯浠?Authorization header 鑾峰彇
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				address = strings.TrimPrefix(authHeader, "Bearer ")
 			}
-			relayer.mu.Unlock()
-			fmt.Printf("❌ [Relayer #%d] 发送失败: %v\n", idx, err)
-			continue 
 		}
-
-		relayer.Nonce++
-		relayer.mu.Unlock()
-		return signedTx.Hash().Hex(), nil
+		
+		if address == "" {
+			sendJSON(w, http.StatusUnauthorized, CommonResponse{
+				Error: "闇€瑕佹彁渚涢挶鍖呭湴鍧€杩涜楠岃瘉",
+			})
+			return
+		}
+		
+		// 妫€鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€锛堝拷鐣ュぇ灏忓啓锛?		isPub, err := isPublisherAddress(address)
+		if err != nil {
+			sendJSON(w, http.StatusInternalServerError, CommonResponse{
+				Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?,
+			})
+			return
+		}
+		
+		if !isPub {
+			sendJSON(w, http.StatusForbidden, CommonResponse{
+				Error: "浠呴檺鍑虹増绀捐闂鍔熻兘",
+			})
+			return
+		}
+		
+		// 鏄嚭鐗堢ぞ锛岀户缁鐞?		next(w, r)
 	}
-
-	return "", fmt.Errorf("所有子钱包均余额不足或发送失败")
 }
 
-// --- Handler 函数 ---
+// --- 鏂板锛氭鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€锛堝拷鐣ュぇ灏忓啓锛?---
+
+func isPublisherAddress(address string) (bool, error) {
+	members, err := rdb.SMembers(ctx, "vault:roles:publishers").Result()
+	if err != nil {
+		return false, err
+	}
+	
+	lowerAddr := strings.ToLower(address)
+	for _, member := range members {
+		if strings.ToLower(member) == lowerAddr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// --- 鏂板锛氬悗鍙拌闂鏌ユ帴鍙?---
+
+func checkAdminAccessHandler(w http.ResponseWriter, r *http.Request) {
+	address := r.URL.Query().Get("address")
+	if address == "" {
+		sendJSON(w, http.StatusBadRequest, CommonResponse{
+			Error: "闇€瑕佹彁渚涢挶鍖呭湴鍧€",
+		})
+		return
+	}
+	
+	// 妫€鏌ユ槸鍚︽槸鍑虹増绀惧湴鍧€
+	isPub, err := isPublisherAddress(address)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{
+			Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?,
+		})
+		return
+	}
+	
+	if !isPub {
+		sendJSON(w, http.StatusForbidden, CommonResponse{
+			Error: "浠呴檺鍑虹増绀捐闂悗鍙?,
+		})
+		return
+	}
+	
+	// 杩橀渶瑕佹鏌ユ槸鍚︿娇鐢ㄤ簡鏈夋晥鐨勬縺娲荤爜锛堝彲閫夛級
+	// 杩欓噷鍙互娣诲姞婵€娲荤爜楠岃瘉閫昏緫
+	
+	sendJSON(w, http.StatusOK, CommonResponse{
+		Ok:   true,
+		Role: "publisher",
+	})
+}
+
+// --- 鏍稿績淇閫昏緫 ---
 
 func mintHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -154,84 +180,168 @@ func mintHandler(w http.ResponseWriter, r *http.Request) {
 		CodeHash string `json:"codeHash"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "参数错误"})
+		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "鍙傛暟鏍煎紡閿欒"})
+		return
+	}
+	
+	destAddr := strings.ToLower(req.Dest)
+
+	// 銆愮涓€姝ワ細鍖哄垎鍑虹増绀炬縺娲荤爜鍜屾櫘閫氭縺娲荤爜銆?	// 妫€鏌ユ槸鍚︽槸鍑虹増绀炬縺娲荤爜锛堜互"pub_"寮€澶达級
+	if strings.HasPrefix(req.CodeHash, "pub_") {
+		// 楠岃瘉鍑虹増绀炬縺娲荤爜鏄惁鏈夋晥
+		isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", req.CodeHash).Result()
+		if !isValid {
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏃犳晥鐨勫嚭鐗堢ぞ鍏戞崲鐮?})
+			return
+		}
+		
+		// 妫€鏌ュ湴鍧€鏄惁鏄嚭鐗堢ぞ鍦板潃锛堜娇鐢ㄦ柊鐨勫嚱鏁帮級
+		isPub, err := isPublisherAddress(destAddr)
+		if err != nil {
+			sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?})
+			return
+		}
+		
+		if !isPub {
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "姝ゅ厬鎹㈢爜浠呴檺鍑虹増绀句娇鐢?})
+			return
+		}
+		
+		// 鍑虹増绀炬縺娲荤爜浣跨敤鍚庝笉鍒犻櫎锛屼繚鎸佹湁鏁?		// 鍙互灏嗕娇鐢ㄨ褰曡褰曞埌鍙︿竴涓泦鍚堬紝浣嗕笉鍦ㄤ富闆嗗悎涓垹闄?		rdb.SAdd(ctx, "vault:codes:used:publishers", req.CodeHash+":"+destAddr)
+		
+		fmt.Printf("鍑虹増绀捐闂垚鍔? %s, 婵€娲荤爜: %s銆傝烦杞埌鍚庡彴椤甸潰銆俓n", destAddr, req.CodeHash)
+		sendJSON(w, http.StatusOK, CommonResponse{
+			Ok:     true,
+			Status: "PUBLISHER_WELCOME",
+			Role:   "publisher",
+		})
+		return
+	}
+	
+	// 銆愮浜屾锛氭鏌ユ槸鍚︿负鍑虹増绀惧湴鍧€锛堜娇鐢ㄦ櫘閫氭縺娲荤爜鐨勬儏鍐碉級銆?	isPub, err := isPublisherAddress(destAddr)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?})
+		return
+	}
+	
+	if isPub {
+		// 鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜锛岀洿鎺ヨ繑鍥炴垚鍔燂紝涓嶆墽琛孧int锛屾縺娲荤爜澶辨晥
+		removed, _ := rdb.SRem(ctx, "vault:codes:valid", req.CodeHash).Result()
+		if removed == 0 {
+			sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏉冮檺楠岃瘉澶辫触锛氭棤鏁堢殑鍏戞崲鐮佹垨宸茶浣跨敤"})
+			return
+		}
+		
+		fmt.Printf("鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜: %s, 婵€娲荤爜: %s銆傝烦杞埌鍚庡彴椤甸潰銆俓n", destAddr, req.CodeHash)
+		sendJSON(w, http.StatusOK, CommonResponse{
+			Ok:     true,
+			Status: "PUBLISHER_WELCOME",
+			Role:   "publisher",
+		})
 		return
 	}
 
-	// 获取客户端 IP
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" { clientIP = r.Header.Get("X-Real-IP") }
-	if clientIP == "" { clientIP = strings.Split(r.RemoteAddr, ":")[0] }
-
-	// 原子化销毁有效码
+	// 銆愮涓夋锛氳鑰呴€昏緫銆戜笉鏄嚭鐗堢ぞ锛屾墠闇€瑕佹牳閿€婵€娲荤爜骞舵墽琛孧int
 	removed, _ := rdb.SRem(ctx, "vault:codes:valid", req.CodeHash).Result()
 	if removed == 0 {
-		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "此码已失效或已领取"})
+		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "鏉冮檺楠岃瘉澶辫触锛氭棤鏁堢殑鍏戞崲鐮佹垨宸茶浣跨敤"})
 		return
 	}
 
-	txHash, err := executeMintLegacy(req.Dest)
+	// 銆愮鍥涙锛氭墽琛岃鑰?Mint銆?	txHash, err := executeMintLegacy(destAddr)
 	if err != nil {
-		rdb.SAdd(ctx, "vault:codes:valid", req.CodeHash) // 失败归还码
-		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: err.Error()})
+		rdb.SAdd(ctx, "vault:codes:valid", req.CodeHash) // 澶辫触鍥炴粴
+		sendJSON(w, http.StatusInternalServerError, CommonResponse{Error: "閾句笂纭潈澶辫触: " + err.Error()})
 		return
 	}
 
-	// 成功后：记录 IP、销量和使用状态
-	pipe := rdb.Pipeline()
-	pipe.SAdd(ctx, "vault:codes:used", req.CodeHash)
-	pipe.HIncrBy(ctx, "whale_vault:daily_mints", time.Now().Format("2006-01-02"), 1)
-	
-	// 记录 Mint 详情
-	mintDetail := map[string]interface{}{
-		"ip":      clientIP,
-		"address": req.Dest,
-		"time":    time.Now().Format(time.RFC3339),
-	}
-	pipe.HSet(ctx, "vault:mint_info:"+req.CodeHash, mintDetail)
-	pipe.SAdd(ctx, "vault:reader_ips", clientIP)
-	pipe.Exec(ctx)
-
-	fmt.Printf("✅ [成功] 目标: %s | IP: %s | Tx: %s\n", req.Dest, clientIP, txHash)
-	sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "submitted", TxHash: txHash})
+	sendJSON(w, http.StatusOK, CommonResponse{
+		Ok:     true,
+		Status: "SUCCESS",
+		TxHash: txHash,
+		Role:   "reader",
+	})
 }
 
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
+	a := r.URL.Query().Get("address")
 	h := r.URL.Query().Get("codeHash")
-	a := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("address")))
-	adminAddr := strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_ADDRESS")))
-
-	// 1. 出版社管理员判定
-	if adminAddr != "" && a == adminAddr {
-		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "ADMIN", Role: "publisher"})
+	
+	if a == "" {
+		sendJSON(w, http.StatusBadRequest, CommonResponse{Error: "闇€瑕佹彁渚涘湴鍧€鍙傛暟"})
 		return
 	}
 
-	// 2. 作者判定 (从 Redis 集合 vault:authors 中读取)
-	isAuthor, _ := rdb.SIsMember(ctx, "vault:authors", a).Result()
+	// 浼樺厛鍒ゅ畾鍑虹増绀撅紙浣跨敤鏂扮殑鍑芥暟锛?	isPub, _ := isPublisherAddress(a)
+	if isPub {
+		// 妫€鏌ユ槸鍚︽槸鍑虹増绀句笓鐢ㄦ縺娲荤爜
+		if strings.HasPrefix(h, "pub_") {
+			// 楠岃瘉鍑虹増绀炬縺娲荤爜鏄惁鏈夋晥
+			isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
+			if isValid {
+				sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
+				return
+			}
+		} else {
+			// 鍑虹増绀句娇鐢ㄦ櫘閫氭縺娲荤爜涔熷厑璁搁獙璇侀€氳繃
+			// 浣嗗疄闄呬娇鐢ㄦ椂浼氬湪mintHandler涓秷鑰?			sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
+			return
+		}
+	}
+
+	// 鍒ゅ畾浣滆€咃紙蹇界暐澶у皬鍐欙級
+	members, _ := rdb.SMembers(ctx, "vault:roles:authors").Result()
+	isAuthor := false
+	for _, member := range members {
+		if strings.ToLower(member) == strings.ToLower(a) {
+			isAuthor = true
+			break
+		}
+	}
+	
 	if isAuthor {
-		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "AUTHOR", Role: "author"})
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "author"})
 		return
 	}
 
-	// 3. 合法读者判定
-	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
+	// 璇昏€呴獙璇佹縺娲荤爜姹?	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", h).Result()
 	if isValid {
-		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Status: "VALID_READER", Role: "reader"})
-		return
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "reader"})
+	} else {
+		sendJSON(w, http.StatusForbidden, CommonResponse{Error: "INVALID_CODE"})
 	}
+}
 
-	sendJSON(w, http.StatusForbidden, CommonResponse{Ok: false, Error: "INVALID_CODE"})
+// --- 杈呭姪鍑芥暟 ---
+
+func executeMintLegacy(toAddr string) (string, error) {
+	idx := atomic.AddUint64(&relayerCounter, 1) % uint64(len(relayers))
+	r := relayers[idx]
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	gasPrice, _ := client.SuggestGasPrice(ctx)
+	tx := types.NewTransaction(uint64(r.Nonce), common.HexToAddress(toAddr), big.NewInt(0), 21000, gasPrice, nil)
+	signedTx, _ := types.SignTx(tx, types.NewEIP155Signer(chainID), r.PrivateKey)
+	
+	if err := client.SendTransaction(ctx, signedTx); err != nil {
+		return "", err
+	}
+	r.Nonce++
+	return signedTx.Hash().Hex(), nil
 }
 
 func getBindingHandler(w http.ResponseWriter, r *http.Request) {
 	h := r.URL.Query().Get("codeHash")
-	mapping, err := rdb.HGetAll(ctx, "vault:bind:"+h).Result()
-	if err != nil || len(mapping) == 0 {
-		sendJSON(w, http.StatusOK, map[string]string{"address": ""})
-		return
+	addr, _ := rdb.HGet(ctx, "vault:bind:"+h, "address").Result()
+	sendJSON(w, http.StatusOK, map[string]string{"address": addr})
+}
+
+func distributionHandler(w http.ResponseWriter, r *http.Request) {
+	data := []map[string]interface{}{
+		{"name": "Beijing", "value": []float64{116.46, 39.92, 10}},
 	}
-	sendJSON(w, http.StatusOK, map[string]string{"address": mapping["address"]})
+	sendJSON(w, http.StatusOK, data)
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +349,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	var keys []string
 	for k := range stats { keys = append(keys, k) }
 	sort.Strings(keys)
+	
 	type Data struct { Date string `json:"date"`; Sales int `json:"sales"` }
 	var result []Data
 	total := 0
@@ -266,18 +377,18 @@ func loadRelayers() {
 	}
 }
 
+func cors(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == "OPTIONS" { return }
+		h.ServeHTTP(w, r)
+	})
+}
+
 func sendJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(payload)
-}
-
-func cors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == "OPTIONS" { return }
-		next.ServeHTTP(w, r)
-	})
 }
