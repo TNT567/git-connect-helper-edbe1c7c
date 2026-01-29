@@ -142,6 +142,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. 检查出版社激活码
 	isPubCode, _ := rdb.SIsMember(ctx, "vault:roles:publishers_codes", code).Result()
 	if isPubCode {
 		rdb.SAdd(ctx, "vault:roles:publishers", addr)
@@ -149,6 +150,15 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2. 检查作者激活码
+	isAuthorCode, _ := rdb.SIsMember(ctx, "vault:roles:authors_codes", code).Result()
+	if isAuthorCode {
+		rdb.SAdd(ctx, "vault:roles:authors", addr)
+		sendJSON(w, 200, CommonResponse{Ok: true, Role: "author"})
+		return
+	}
+
+	// 3. 检查读者激活码
 	isValid, _ := rdb.SIsMember(ctx, "vault:codes:valid", code).Result()
 	isUsed, _ := rdb.SIsMember(ctx, "vault:codes:used", code).Result()
 
