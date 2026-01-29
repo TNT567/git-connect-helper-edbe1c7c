@@ -132,14 +132,28 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	a := strings.ToLower(r.URL.Query().Get("address"))
 	h := r.URL.Query().Get("codeHash")
 
-	// 优先判定出版社
+	// 方案1：优先通过 codeHash 判定角色（检查各角色的 codes 集合）
+	// 出版社激活码检查
+	isPubCode, _ := rdb.SIsMember(ctx, "vault:roles:publishers_codes", h).Result()
+	if isPubCode {
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
+		return
+	}
+
+	// 作者激活码检查
+	isAuthorCode, _ := rdb.SIsMember(ctx, "vault:roles:authors_codes", h).Result()
+	if isAuthorCode {
+		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "author"})
+		return
+	}
+
+	// 方案2：通过地址判定（兼容旧逻辑）
 	isPub, _ := rdb.SIsMember(ctx, "vault:roles:publishers", a).Result()
 	if isPub {
 		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "publisher"})
 		return
 	}
 
-	// 判定作者
 	isAuthor, _ := rdb.SIsMember(ctx, "vault:roles:authors", a).Result()
 	if isAuthor {
 		sendJSON(w, http.StatusOK, CommonResponse{Ok: true, Role: "author"})
