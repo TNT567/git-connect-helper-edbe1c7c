@@ -210,11 +210,17 @@ func mintHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, 200, CommonResponse{Ok: true, TxHash: txHash, Role: "reader"})
 }
 
-// --- 核心修复：executeMintLegacy ---
+// --- 核心修复：调用 NFT 合约的 mint(address to) 方法 ---
 
 func executeMintLegacy(to string) (string, error) {
 	if len(relayers) == 0 {
 		return "", fmt.Errorf("no relayers available")
+	}
+
+	// 获取 NFT 合约地址（子合约）
+	contractAddr := os.Getenv("CONTRACT_ADDR")
+	if contractAddr == "" {
+		return "", fmt.Errorf("CONTRACT_ADDR not configured")
 	}
 
 	// 1. 选择 Relayer
@@ -224,8 +230,7 @@ func executeMintLegacy(to string) (string, error) {
 	rel.mu.Lock()
 	defer rel.mu.Unlock()
 
-	// 2. 🌟 核心改进：实时获取链上 Pending Nonce
-	// 避免 "nonce too low" 错误，确保交易序号与链上完全同步
+	// 2. 实时获取链上 Pending Nonce
 	nonce, err := client.PendingNonceAt(ctx, rel.Address)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch nonce: %v", err)
@@ -237,25 +242,40 @@ func executeMintLegacy(to string) (string, error) {
 		return "", fmt.Errorf("failed to suggest gas price: %v", err)
 	}
 
-	// 4. 构建交易
-	// 适当提高 Gas Limit (150,000) 确保 Mint 操作能覆盖
-	gasLimit := uint64(150000)
-	tx := types.NewTransaction(nonce, common.HexToAddress(to), big.NewInt(0), gasLimit, gasPrice, nil)
+	// 4. 构建合约调用 Data: mint(address to) -> 方法签名 0x6a627842
+	// mint(address) 的函数选择器是 keccak256("mint(address)")[:4] = 0x6a627842
+	methodID := common.FromHex("0x6a627842")
+	// 将目标地址填充为 32 字节
+	paddedAddress := common.LeftPadBytes(common.HexToAddress(to).Bytes(), 32)
+	// 拼接 calldata: 方法选择器 + 参数
+	data := append(methodID, paddedAddress...)
+
+	// 5. 构建交易 - 调用合约而非普通转账
+	gasLimit := uint64(200000) // Mint 操作需要更多 Gas
+	tx := types.NewTransaction(
+		nonce,
+		common.HexToAddress(contractAddr), // 目标是 NFT 合约地址
+		big.NewInt(0),                      // 不发送 CFX
+		gasLimit,
+		gasPrice,
+		data, // 合约调用数据
+	)
 	
-	// 5. 签名
+	// 6. 签名
 	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), rel.PrivateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign tx: %v", err)
 	}
 
-	// 6. 发送交易
+	// 7. 发送交易
 	err = client.SendTransaction(ctx, signedTx)
 	if err != nil {
-		fmt.Printf("❌ Relayer %s 发送失败: %v\n", rel.Address.Hex(), err)
+		fmt.Printf("❌ Relayer %s Mint失败: %v\n", rel.Address.Hex(), err)
 		return "", err
 	}
 
-	fmt.Printf("🚀 Relayer %s 发送成功 | TX: %s | Nonce: %d\n", rel.Address.Hex(), signedTx.Hash().Hex(), nonce)
+	fmt.Printf("🚀 Mint成功 | 合约: %s | 接收者: %s | TX: %s | Nonce: %d\n", 
+		contractAddr, to, signedTx.Hash().Hex(), nonce)
 	return signedTx.Hash().Hex(), nil
 }
 
