@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as echarts from 'echarts';
+import { BACKEND_URL } from '../config/backend';
 
 const Heatmap: React.FC = () => {
   const chartRef = useRef<HTMLDivElement>(null);
@@ -23,8 +24,8 @@ const Heatmap: React.FC = () => {
         // 注册地图
         echarts.registerMap('world', worldGeoJson);
 
-        // 3. 从您的 Go 后端获取热力图数据
-        const dataRes = await fetch('http://198.55.109.102:8080/api/v1/analytics/distribution');
+        // 3. 从后端获取热力图数据
+        const dataRes = await fetch(`${BACKEND_URL}/api/v1/analytics/distribution`);
         const heatmapData = await dataRes.json();
 
         // 4. 配置 ECharts 选项

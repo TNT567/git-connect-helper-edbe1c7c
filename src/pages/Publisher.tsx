@@ -158,36 +158,52 @@ const Publisher: React.FC = () => {
     return <div className="min-h-screen bg-[#0b0e11]"></div>;
   }
 
+  // 退出登录
+  const handleLogout = () => {
+    localStorage.removeItem('vault_pub_auth');
+    localStorage.removeItem('vault_user_role');
+    localStorage.removeItem('vault_code_hash');
+    navigate('/');
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0e11] text-white">
       {/* 顶部导航栏 */}
       <header className="bg-[#131722] border-b border-white/5 px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div>
-            <h1 className="text-xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+            <h1 className="text-xl font-black bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
               PUBLISHER TERMINAL
             </h1>
             <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">
               {pubAddress.slice(0, 6)}...{pubAddress.slice(-4)}
             </p>
           </div>
-          <div className="flex gap-2">
-            {(['overview', 'addBook', 'qrcode', 'analytics'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-xs font-medium rounded-lg transition-all ${
-                  activeTab === tab 
-                    ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' 
-                    : 'text-slate-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                {tab === 'overview' && '📊 销量总览'}
-                {tab === 'addBook' && '📚 新增图书'}
-                {tab === 'qrcode' && '🔗 生成二维码'}
-                {tab === 'analytics' && '🗺️ 热力分析'}
-              </button>
-            ))}
+          <div className="flex items-center gap-4">
+            <div className="flex gap-2">
+              {(['overview', 'addBook', 'qrcode', 'analytics'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-2 text-xs font-medium rounded-lg transition-all ${
+                    activeTab === tab 
+                      ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' 
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {tab === 'overview' && '📊 销量总览'}
+                  {tab === 'addBook' && '📚 新增图书'}
+                  {tab === 'qrcode' && '🔗 生成二维码'}
+                  {tab === 'analytics' && '🗺️ 热力分析'}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-all"
+            >
+              退出登录
+            </button>
           </div>
         </div>
       </header>

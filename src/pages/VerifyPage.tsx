@@ -120,24 +120,70 @@ const VerifyPage: React.FC<VerifyPageProps> = ({ onVerify }) => {
     );
   }
 
+  // 出版社/作者登录处理
+  const handleAdminLogin = async () => {
+    if (!targetAddress) {
+      setError('请输入管理钱包地址');
+      return;
+    }
+    
+    try {
+      // 保存登录状态到 localStorage
+      localStorage.setItem('vault_pub_auth', targetAddress.toLowerCase());
+      localStorage.setItem('vault_user_role', role || 'publisher');
+      localStorage.setItem('vault_code_hash', codeHash);
+      
+      // 根据角色跳转到不同页面
+      if (role === 'publisher') {
+        navigate('/publisher-admin');
+      } else if (role === 'author') {
+        navigate('/publisher-admin'); // 作者也使用同一后台，但功能有限
+      }
+    } catch (err) {
+      setError('登录失败，请重试');
+    }
+  };
+
+  // 获取角色对应的样式和文案
+  const getRoleStyle = () => {
+    switch (role) {
+      case 'publisher':
+        return { border: 'border-purple-500/50', text: 'text-purple-500', bg: 'bg-purple-500/5', label: '出版社' };
+      case 'author':
+        return { border: 'border-orange-500/50', text: 'text-orange-500', bg: 'bg-orange-500/5', label: '作者' };
+      case 'reader':
+        return { border: 'border-green-500/50', text: 'text-green-500', bg: 'bg-green-500/5', label: '读者' };
+      default:
+        return { border: 'border-blue-500/50', text: 'text-blue-500', bg: 'bg-blue-500/5', label: '未知' };
+    }
+  };
+
+  const roleStyle = getRoleStyle();
+
   return (
     <div className="min-h-screen bg-[#0b0e11] text-white flex flex-col items-center justify-center p-4">
       <div className="max-w-md w-full bg-[#131722] p-8 rounded-[32px] border border-white/5 shadow-2xl space-y-8 relative overflow-hidden">
         
         {/* 装饰性光效 */}
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-30" />
+        <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${
+          role === 'publisher' ? 'via-purple-500' : role === 'author' ? 'via-orange-500' : 'via-blue-500'
+        } to-transparent opacity-50`} />
 
         <div className="text-center space-y-4">
           <h2 className="text-[#2962ff] font-bold text-[10px] uppercase tracking-[0.5em]">Identity Terminal</h2>
           <div className="py-6 flex flex-col items-center justify-center space-y-3">
-             <div className={`px-4 py-1 rounded-full border text-[10px] font-bold tracking-widest uppercase transition-all ${
-               role === 'reader' ? 'border-green-500/50 text-green-500 bg-green-500/5' : 'border-blue-500/50 text-blue-500 bg-blue-500/5'
-             }`}>
-               {role || 'Unknown'} Detected
+             <div className={`px-4 py-1 rounded-full border text-[10px] font-bold tracking-widest uppercase transition-all ${roleStyle.border} ${roleStyle.text} ${roleStyle.bg}`}>
+               {roleStyle.label} Detected
              </div>
              <p className="text-gray-500 text-[9px] font-mono opacity-40 break-all px-4">{codeHash}</p>
           </div>
         </div>
+
+        {error && (
+          <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-center">
+            <p className="text-red-400 text-xs">{error}</p>
+          </div>
+        )}
 
         {role === 'reader' ? (
           <div className="text-center space-y-6">
@@ -154,20 +200,33 @@ const VerifyPage: React.FC<VerifyPageProps> = ({ onVerify }) => {
           </div>
         ) : (
           <div className="space-y-6">
+            {/* 出版社/作者专属提示 */}
+            <div className={`p-4 rounded-xl ${role === 'publisher' ? 'bg-purple-500/10 border border-purple-500/20' : 'bg-orange-500/10 border border-orange-500/20'}`}>
+              <p className={`text-xs ${role === 'publisher' ? 'text-purple-400' : 'text-orange-400'}`}>
+                {role === 'publisher' ? '📚 出版社管理后台：查看销量、部署新书、生成二维码、热力分析' : '✍️ 作者后台：查看作品销量和读者分布'}
+              </p>
+            </div>
+
             <div className="space-y-2">
-              <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">管理节点验证</label>
+              <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">绑定钱包地址</label>
               <input 
                 value={targetAddress}
                 onChange={(e) => setTargetAddress(e.target.value)}
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-4 text-sm font-mono text-center outline-none focus:border-[#2962ff] transition-all"
-                placeholder="请输入管理钱包地址"
+                placeholder="0x..."
+                readOnly={!!targetAddress}
               />
+              <p className="text-[9px] text-slate-600 text-center">此地址已与您的激活码绑定</p>
             </div>
             <button 
-              onClick={() => onVerify(targetAddress, codeHash).then(() => navigate('/publisher-admin'))} 
-              className="w-full py-4 rounded-2xl bg-[#2962ff] font-bold text-xs uppercase tracking-widest hover:bg-blue-500 transition-all"
+              onClick={handleAdminLogin}
+              className={`w-full py-4 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all ${
+                role === 'publisher' 
+                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500' 
+                  : 'bg-gradient-to-r from-orange-600 to-yellow-600 hover:from-orange-500 hover:to-yellow-500'
+              }`}
             >
-              进入管理后台
+              进入{role === 'publisher' ? '出版社' : '作者'}后台
             </button>
           </div>
         )}
