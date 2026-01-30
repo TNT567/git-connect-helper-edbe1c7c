@@ -65,9 +65,9 @@ func (h *MarketHandler) GetTickers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 如果仍然没有数据，返回模拟数据（开发阶段）
-	if len(result) == 0 {
-		result = h.getMockData()
+	// 不再返回模拟数据，返回空数组
+	if result == nil {
+		result = []BookMeta{}
 	}
 
 	json.NewEncoder(w).Encode(result)
@@ -121,36 +121,6 @@ func (h *MarketHandler) getBookDetail(ctx context.Context, addr string) *BookMet
 	}
 
 	return nil
-}
-
-// getMockData 返回开发阶段的模拟数据
-func (h *MarketHandler) getMockData() []BookMeta {
-	return []BookMeta{
-		{
-			Symbol:  "WHALE",
-			Name:    map[string]string{"zh": "鲸鱼传奇", "en": "Whale Legend"},
-			Author:  map[string]string{"zh": "深海作者", "en": "Deep Sea Author"},
-			Address: "0x0000000000000000000000000000000000000001",
-			Sales:   1234,
-			Change:  "+12.5%",
-		},
-		{
-			Symbol:  "VAULT",
-			Name:    map[string]string{"zh": "金库密码", "en": "Vault Code"},
-			Author:  map[string]string{"zh": "神秘作家", "en": "Mystery Writer"},
-			Address: "0x0000000000000000000000000000000000000002",
-			Sales:   856,
-			Change:  "+8.2%",
-		},
-		{
-			Symbol:  "NFT01",
-			Name:    map[string]string{"zh": "区块链入门", "en": "Blockchain Basics"},
-			Author:  map[string]string{"zh": "技术大牛", "en": "Tech Guru"},
-			Address: "0x0000000000000000000000000000000000000003",
-			Sales:   567,
-			Change:  "-2.1%",
-		},
-	}
 }
 
 // getOrDefault 安全获取数组元素
