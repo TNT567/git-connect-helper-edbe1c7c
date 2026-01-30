@@ -1,46 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserQRCodeReader } from '@zxing/browser'; 
+import { mockDelay, MOCK_LEADERBOARD, generateFakeTxHash, getRandomBook } from '../data/mockData';
+import { showToast, ToastContainer } from '../components/ui/CyberpunkToast';
 
-// --- 子组件：Leaderboard (社区贡献排行榜) ---
+// --- 子组件：Leaderboard (社区贡献排行榜 - Mock) ---
 const Leaderboard: React.FC = () => {
   const [list, setList] = useState<{ address: string; count: number }[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchLeaderboard = async () => {
-    try {
-      // 请求后端统计接口（不带 address 参数获取全量排行榜）
-      const res = await fetch('http://198.55.109.102:8080/relay/stats');
-      const data = await res.json();
-      
-      if (data.ok && data.all_stats) {
-        // 将 Redis 的 Hash 对象转为数组并按推荐次数从高到低排序
-        const formattedList = Object.entries(data.all_stats).map(([addr, count]) => ({
-          address: addr,
-          count: parseInt(count as string, 10),
-        })).sort((a, b) => b.count - a.count);
-        
-        setList(formattedList.slice(0, 10)); // 仅展示前 10 名
-      }
-    } catch (e) {
-      console.error("排行榜抓取失败", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchLeaderboard();
-    const timer = setInterval(fetchLeaderboard, 30000); // 每 30 秒轮询一次
-    return () => clearInterval(timer);
+    const loadMockLeaderboard = async () => {
+      await mockDelay(800);
+      setList(MOCK_LEADERBOARD);
+      setLoading(false);
+    };
+    loadMockLeaderboard();
   }, []);
 
-  if (loading) return <div className="text-center text-slate-500 py-6 text-xs animate-pulse">同步金库排行中...</div>;
+  if (loading) return <div className="text-center text-slate-500 py-6 text-xs animate-pulse">同步 Mock 排行中...</div>;
 
   return (
     <div className="mt-8 w-full bg-[#0f172a]/50 rounded-2xl border border-white/5 overflow-hidden shadow-inner">
       <div className="p-4 border-b border-white/5 bg-white/5 flex justify-between items-center">
-        <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">🏆 社区贡献榜</h3>
-        <span className="text-[10px] text-slate-500">实时数据</span>
+        <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">🏆 社区贡献榜 (Mock)</h3>
+        <span className="text-[10px] text-slate-500">模拟数据</span>
       </div>
       <div className="divide-y divide-white/5">
         {list.map((item, index) => (
@@ -59,11 +41,10 @@ const Leaderboard: React.FC = () => {
             </div>
             <div className="text-right">
               <div className="text-xs font-bold text-blue-400">{item.count} 次</div>
-              <div className="text-[9px] text-slate-600 uppercase">Successful Referrals</div>
+              <div className="text-[9px] text-slate-600 uppercase">Referrals</div>
             </div>
           </div>
         ))}
-        {list.length === 0 && <div className="p-6 text-center text-xs text-slate-600 italic">虚位以待，快去推荐读者吧！</div>}
       </div>
     </div>
   );
@@ -76,129 +57,104 @@ const Reward: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info', msg: string, txHash?: string } | null>(null);
 
-  // 1. 处理图片上传并提取二维码
+  // Mock: 处理图片上传并模拟二维码提取
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setLoading(true);
-    setStatus({ type: 'info', msg: '正在解析二维码图片...' });
+    setStatus({ type: 'info', msg: '正在模拟解析二维码图片...' });
 
-    const codeReader = new BrowserQRCodeReader();
-    try {
-      const imageUrl = URL.createObjectURL(file);
-      const result = await codeReader.decodeFromImageUrl(imageUrl);
-      const decodedText = result.getText();
+    await mockDelay(1500);
 
-      // 提取 HashCode
-      const match = decodedText.match(/\/valut_mint_nft\/(0x[a-fA-F0-9]+|[a-fA-F0-9]+)/);
-      
-      if (match && match[1]) {
-        const hashCode = match[1].toLowerCase(); 
-        await verifyAndAddCode(hashCode);
-      } else {
-        setStatus({ type: 'error', msg: '无法识别有效书码：请扫描正版书籍二维码' });
-      }
-    } catch (err) {
-      setStatus({ type: 'error', msg: '解析失败：请确保二维码清晰且光线充足' });
-    } finally {
-      setLoading(false);
-      e.target.value = ''; 
-    }
+    // 生成一个假的 hash code
+    const fakeHashCode = `0x${Math.random().toString(16).slice(2, 34)}`;
+    
+    // 模拟验证并填充
+    await verifyAndAddCode(fakeHashCode);
+    
+    setLoading(false);
+    e.target.value = '';
   };
 
-  // 2. 校验并自动填充槽位
+  // Mock: 校验并自动填充槽位
   const verifyAndAddCode = async (h: string) => {
-    try {
-      const res = await fetch(`http://198.55.109.102:8080/secret/verify?codeHash=${h}`);
-      const data = await res.json();
-
-      if (res.ok && data.ok) {
-        if (codes.includes(h)) {
-          setStatus({ type: 'info', msg: '该书码已在列表中' });
-          return;
-        }
-
-        const emptyIdx = codes.findIndex(c => c === '');
-        if (emptyIdx !== -1) {
-          const newCodes = [...codes];
-          newCodes[emptyIdx] = h;
-          setCodes(newCodes);
-          setStatus({ type: 'success', msg: '正版验证成功！已自动填入' });
-          
-          // 如果用户填了地址，则同步到 Redis 暂存
-          if (walletAddress) {
-             fetch('http://198.55.109.102:8080/relay/save-code', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ address: walletAddress.toLowerCase(), codeHash: h })
-             });
-          }
-        } else {
-          setStatus({ type: 'error', msg: '5 个槽位已满，请先提交领取' });
-        }
-      } else {
-        setStatus({ type: 'error', msg: '无效二维码：可能是盗版或已被使用' });
+    await mockDelay(500);
+    
+    // 模拟验证成功
+    const isValid = Math.random() > 0.2; // 80% 成功率
+    
+    if (isValid) {
+      if (codes.includes(h)) {
+        setStatus({ type: 'info', msg: '该书码已在列表中' });
+        return;
       }
-    } catch (e) {
-      setStatus({ type: 'error', msg: '服务器连接失败' });
+
+      const emptyIdx = codes.findIndex(c => c === '');
+      if (emptyIdx !== -1) {
+        const newCodes = [...codes];
+        newCodes[emptyIdx] = h;
+        setCodes(newCodes);
+        
+        const book = getRandomBook();
+        setStatus({ type: 'success', msg: `正版验证成功！《${book.title}》已自动填入` });
+      } else {
+        setStatus({ type: 'error', msg: '5 个槽位已满，请先提交领取' });
+      }
+    } else {
+      setStatus({ type: 'error', msg: '无效二维码：可能是盗版或已被使用 (Mock 随机失败)' });
     }
   };
 
-  // 3. 提交领取奖励
+  // Mock: 提交领取奖励
   const handleSubmit = async () => {
     const finalCodes = codes.filter(c => c !== '');
     const cleanAddr = walletAddress.trim().toLowerCase();
 
-    setLoading(true);
-    setStatus({ type: 'info', msg: '正在请求国库发放 MON 奖励...' });
-
-    try {
-      const response = await fetch('http://198.55.109.102:8080/relay/reward', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dest: cleanAddr,
-          codes: finalCodes
-        })
-      });
-
-      const data = await response.json();
-      if (data.ok) {
-        // 请求成功后的推荐计数统计
-        let currentCount = "1";
-        try {
-          const statsRes = await fetch(`http://198.55.109.102:8080/relay/stats?address=${cleanAddr}`);
-          const statsData = await statsRes.json();
-          if (statsData.ok) currentCount = statsData.count;
-        } catch (e) { console.error(e); }
-
-        setCodes(['', '', '', '', '']);
-        setStatus({ 
-          type: 'success', 
-          msg: `🎉 领取成功！您已累计推荐 ${currentCount} 位读者。`,
-          txHash: data.txHash 
-        });
-
-        alert(`恭喜！奖励已到账。\n您当前的累计推荐人数为：${currentCount} 人。`);
-      } else {
-        setStatus({ type: 'error', msg: data.error || '领取失败' });
-      }
-    } catch (err) {
-      setStatus({ type: 'error', msg: '通信失败，请检查网络' });
-    } finally {
-      setLoading(false);
+    if (finalCodes.length < 5) {
+      showToast('请先集齐 5 个书码', 'warning');
+      return;
     }
+
+    if (!cleanAddr.startsWith('0x')) {
+      showToast('请输入有效的钱包地址', 'warning');
+      return;
+    }
+
+    setLoading(true);
+    setStatus({ type: 'info', msg: '正在模拟发放 MON 奖励...' });
+
+    await mockDelay(2000);
+
+    const txHash = generateFakeTxHash();
+    const randomCount = Math.floor(Math.random() * 20) + 1;
+
+    setCodes(['', '', '', '', '']);
+    setStatus({ 
+      type: 'success', 
+      msg: `🎉 领取成功！您已累计推荐 ${randomCount} 位读者。`,
+      txHash 
+    });
+
+    showToast(`🎉 奖励已发放！累计推荐 ${randomCount} 人`, 'success', txHash);
+    setLoading(false);
   };
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-white flex flex-col items-center justify-center p-4">
+      <ToastContainer />
+      
       <div className="max-w-md w-full bg-[#1e293b] p-8 rounded-2xl border border-white/10 shadow-2xl">
-        <h2 className="text-2xl font-bold mb-6 text-center text-blue-400">🐳 拍照提取返利</h2>
+        <h2 className="text-2xl font-bold mb-2 text-center text-blue-400">🐳 拍照提取返利</h2>
+        
+        {/* Demo 标识 */}
+        <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2 text-center mb-6">
+          <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">🔧 Demo Mode - Mock Data</p>
+        </div>
         
         <div className="mb-8">
           <label className="block text-center p-6 border-2 border-dashed border-white/20 rounded-xl hover:border-blue-500 cursor-pointer transition-all bg-[#0f172a]/50">
-            <span className="text-sm text-slate-400">{loading ? '通信中...' : '点击拍照或上传书籍二维码'}</span>
+            <span className="text-sm text-slate-400">{loading ? '模拟处理中...' : '点击上传任意图片模拟扫码'}</span>
             <input 
               type="file" 
               accept="image/*" 
@@ -219,7 +175,7 @@ const Reward: React.FC = () => {
             <div className="font-bold mb-1">{status.msg}</div>
             {status.txHash && (
                <div className="mt-2 text-[10px] opacity-70">
-                 链上凭证: <a href={`https://explorer.monad.xyz/tx/${status.txHash}`} target="_blank" rel="noreferrer" className="underline font-mono">{status.txHash}</a>
+                 Mock TX: <span className="font-mono">{status.txHash.slice(0, 20)}...</span>
                </div>
             )}
           </div>
@@ -241,8 +197,10 @@ const Reward: React.FC = () => {
                 type="text"
                 readOnly
                 placeholder={`待填充书码 ${index + 1}`}
-                className="w-full bg-[#0f172a]/50 border border-white/5 rounded-lg px-3 py-2 text-[10px] text-slate-500 italic"
-                value={code}
+                className={`w-full bg-[#0f172a]/50 border rounded-lg px-3 py-2 text-[10px] italic ${
+                  code ? 'border-green-500/30 text-green-400' : 'border-white/5 text-slate-500'
+                }`}
+                value={code ? `${code.slice(0, 16)}...` : ''}
               />
             ))}
           </div>
@@ -253,14 +211,13 @@ const Reward: React.FC = () => {
           className="mt-8 w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 py-4 rounded-xl font-bold disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 transition-all shadow-xl active:scale-95"
           disabled={loading || codes.filter(c => c).length < 5 || !walletAddress.startsWith('0x')}
         >
-          {loading ? '正在处理数据...' : '集齐 5 码领取 0.001 MON'}
+          {loading ? '正在处理数据...' : '集齐 5 码领取 0.001 MON (Mock)'}
         </button>
 
-        {/* 4. 集成排行榜组件 */}
         <Leaderboard />
       </div>
       
-      <p className="mt-6 text-[10px] text-slate-500 font-mono">Whale Vault Protocol v1.0 • Powering Monad Ecosystem</p>
+      <p className="mt-6 text-[10px] text-slate-500 font-mono">Whale Vault Protocol • DEMO MODE</p>
     </div>
   );
 };

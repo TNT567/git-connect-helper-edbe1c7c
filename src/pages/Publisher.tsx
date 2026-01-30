@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BACKEND_URL } from '../config/backend';
+import { MOCK_BOOKS, MOCK_REGIONS, mockDelay, generateFakeTxHash, getTotalSales } from '../data/mockData';
+import { showToast, ToastContainer } from '../components/ui/CyberpunkToast';
 
-// 书籍销量数据结构
+// Mock 书籍销量数据结构
 interface BookSales {
   address: string;
   symbol: string;
@@ -12,7 +13,7 @@ interface BookSales {
   explorerUrl: string;
 }
 
-// 地区排名数据结构
+// Mock 地区排名数据结构
 interface RegionRank {
   region: string;
   count: number;
@@ -31,108 +32,77 @@ const Publisher: React.FC = () => {
   const [symbol, setSymbol] = useState<string>('');
   const [contractAddr, setContractAddr] = useState<string | null>(null);
   const [count, setCount] = useState<number>(100);
-  const [showRechargeGuide, setShowRechargeGuide] = useState<boolean>(false);
   
-  // 出版社地址（从本地缓存获取）
+  // 出版社地址
   const [pubAddress, setPubAddress] = useState<string>('');
   
-  // 钱包余额状态
-  const [balanceCFX, setBalanceCFX] = useState<number>(0);
-  const [maxDeploys, setMaxDeploys] = useState<number>(0);
-  const [balanceLoading, setBalanceLoading] = useState<boolean>(true);
+  // Mock 钱包余额
+  const [balanceCFX, setBalanceCFX] = useState<number>(125.50);
+  const [maxDeploys, setMaxDeploys] = useState<number>(12);
+  const [balanceLoading, setBalanceLoading] = useState<boolean>(false);
 
   // 销量数据
   const [bookSales, setBookSales] = useState<BookSales[]>([]);
   const [regionRanks, setRegionRanks] = useState<RegionRank[]>([]);
   const [totalSales, setTotalSales] = useState<number>(0);
 
-  // --- 核心：无感知准入检查 ---
   useEffect(() => {
-    const authAddr = localStorage.getItem('vault_pub_auth');
-    const authRole = localStorage.getItem('vault_user_role');
+    const initPublisher = async () => {
+      const authAddr = localStorage.getItem('vault_pub_auth');
+      const authRole = localStorage.getItem('vault_user_role');
 
-    if (!authAddr || authRole !== 'publisher') {
-      navigate('/', { replace: true });
-    } else {
-      setPubAddress(authAddr);
+      if (!authAddr || (authRole !== 'publisher' && authRole !== 'author')) {
+        // Demo 模式：自动生成模拟地址
+        const mockAddr = `0x${Math.random().toString(16).slice(2, 42)}`;
+        setPubAddress(mockAddr);
+        localStorage.setItem('vault_pub_auth', mockAddr);
+        localStorage.setItem('vault_user_role', 'publisher');
+      } else {
+        setPubAddress(authAddr);
+      }
+      
+      await fetchDashboardData();
       setLoading(false);
-      fetchDashboardData();
-    }
-  }, [navigate]);
+    };
+    
+    initPublisher();
+  }, []);
 
-  // --- 获取出版社余额 ---
+  // Mock: 获取仪表盘数据
+  const fetchDashboardData = async () => {
+    await mockDelay(800);
+    
+    // 从 Mock 数据生成销量列表
+    const salesData: BookSales[] = MOCK_BOOKS.map((book) => ({
+      address: `0x${book.id}${'0'.repeat(40 - book.id.length)}`,
+      symbol: book.symbol,
+      name: book.title,
+      author: book.author,
+      sales: book.sales,
+      explorerUrl: `#` // Demo 模式
+    }));
+    
+    setBookSales(salesData);
+    setTotalSales(getTotalSales());
+    
+    // 从 Mock 区域数据生成排行
+    const ranked: RegionRank[] = MOCK_REGIONS
+      .map(r => ({ region: r.name, count: r.value[2] }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+    setRegionRanks(ranked);
+  };
+
+  // Mock: 刷新余额
   const fetchPublisherBalance = async () => {
     setBalanceLoading(true);
-    try {
-      const codeHash = localStorage.getItem('vault_code_hash');
-      console.log('[Publisher] Fetching balance with codeHash:', codeHash);
-      
-      if (!codeHash) {
-        console.warn('[Publisher] No vault_code_hash in localStorage');
-        setBalanceLoading(false);
-        return;
-      }
-      
-      const url = `${BACKEND_URL}/api/v1/publisher/balance?codeHash=${codeHash}`;
-      console.log('[Publisher] Balance API URL:', url);
-      
-      const res = await fetch(url);
-      const data = await res.json();
-      console.log('[Publisher] Balance API response:', data);
-      
-      if (res.ok && data.ok) {
-        setBalanceCFX(data.balance || 0);
-        setMaxDeploys(data.maxDeploys || 0);
-      } else {
-        console.error('[Publisher] Balance API error:', data.error);
-      }
-    } catch (err) {
-      console.error('[Publisher] Balance fetch error:', err);
-    } finally {
-      setBalanceLoading(false);
-    }
+    await mockDelay(500);
+    setBalanceCFX(prev => prev + Math.random() * 10);
+    setBalanceLoading(false);
+    showToast('余额已刷新 (Mock)', 'success');
   };
 
-  // --- 获取仪表盘数据 ---
-  const fetchDashboardData = async () => {
-    try {
-      // 先获取余额
-      fetchPublisherBalance();
-      
-      // 获取书籍大盘数据
-      const tickersRes = await fetch(`${BACKEND_URL}/api/v1/market/tickers?page=1`);
-      if (tickersRes.ok) {
-        const tickers = await tickersRes.json();
-        const salesData: BookSales[] = (tickers || []).map((t: any) => ({
-          address: t.address || '',
-          symbol: t.symbol || 'N/A',
-          name: t.name?.zh || t.name?.en || '未知书籍',
-          author: t.author?.zh || t.author?.en || '未知作者',
-          sales: t.sales || 0,
-          // Conflux eSpace Testnet 区块链浏览器链接
-          explorerUrl: `https://evmtestnet.confluxscan.io/address/${t.address}`
-        }));
-        setBookSales(salesData);
-        setTotalSales(salesData.reduce((acc, b) => acc + b.sales, 0));
-      }
-
-      // 获取地区分布数据
-      const distRes = await fetch(`${BACKEND_URL}/api/v1/analytics/distribution`);
-      if (distRes.ok) {
-        const distData = await distRes.json();
-        // 按数量排序，取前10
-        const ranked: RegionRank[] = (distData || [])
-          .map((d: any) => ({ region: d.name || '未知', count: d.value?.[2] || 0 }))
-          .sort((a: RegionRank, b: RegionRank) => b.count - a.count)
-          .slice(0, 10);
-        setRegionRanks(ranked);
-      }
-    } catch (err) {
-      console.error('Dashboard data fetch error:', err);
-    }
-  };
-
-  // --- 部署合约逻辑 (后端代签模式) ---
+  // Mock: 部署合约
   const handleDeployContract = async () => {
     if (!bookName || !symbol) {
       setError("请完整填写书籍名称和代码");
@@ -141,73 +111,36 @@ const Publisher: React.FC = () => {
 
     setOpLoading(true);
     setError(null);
-    setShowRechargeGuide(false);
 
-    try {
-      // 获取出版社的 codeHash
-      const codeHash = localStorage.getItem('vault_code_hash');
-      if (!codeHash) {
-        setError("缺少身份验证信息，请重新登录");
-        return;
-      }
-
-      // 调用后端 API，后端使用 Redis 中存储的私钥进行代签
-      const response = await fetch(`${BACKEND_URL}/api/v1/factory/deploy-book`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          codeHash: codeHash,
-          bookName: bookName,
-          authorName: author || '未知作者',
-          symbol: symbol.toUpperCase(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (response.status === 400 && data.balance) {
-        // 余额不足
-        setError(data.error);
-        setShowRechargeGuide(true);
-        return;
-      }
-
-      if (!data.ok) throw new Error(data.error || "部署失败");
-
-      // 部署成功，显示交易哈希
-      setContractAddr(data.txHash);
-      // 刷新数据
-      setTimeout(() => fetchDashboardData(), 5000); // 等待链上确认
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setOpLoading(false);
-    }
+    await mockDelay(2000);
+    
+    const txHash = generateFakeTxHash();
+    setContractAddr(txHash);
+    
+    // 添加到列表
+    const newBook: BookSales = {
+      address: txHash,
+      symbol: symbol.toUpperCase(),
+      name: bookName,
+      author: author || '未知作者',
+      sales: 0,
+      explorerUrl: '#'
+    };
+    setBookSales(prev => [newBook, ...prev]);
+    
+    showToast(`合约部署成功！${symbol.toUpperCase()}`, 'success', txHash);
+    setOpLoading(false);
   };
 
-  // --- 批量生成码逻辑 ---
+  // Mock: 批量生成码
   const handleGenerateBatch = async () => {
     if (!contractAddr) return;
     setOpLoading(true);
-    setError(null);
 
-    try {
-      const apiUrl = `${BACKEND_URL}/admin/generate?count=${count}&contract=${contractAddr}`;
-      const response = await fetch(apiUrl, { method: 'GET' });
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${symbol}_Codes_${new Date().getTime()}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      a.remove();
-    } catch (err: any) {
-      setError(err.message || "生成失败");
-    } finally {
-      setOpLoading(false);
-    }
+    await mockDelay(1500);
+    
+    showToast(`已生成 ${count} 个激活码 (Mock)`, 'success');
+    setOpLoading(false);
   };
 
   if (loading) {
@@ -215,22 +148,23 @@ const Publisher: React.FC = () => {
       <div className="min-h-screen bg-[#0b0e11] flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-400 text-sm">正在验证身份...</p>
+          <p className="text-slate-400 text-sm">加载 Mock 数据...</p>
         </div>
       </div>
     );
   }
 
-  // 退出登录
   const handleLogout = () => {
     localStorage.removeItem('vault_pub_auth');
     localStorage.removeItem('vault_user_role');
     localStorage.removeItem('vault_code_hash');
-    navigate('/');
+    navigate('/bookshelf');
   };
 
   return (
     <div className="min-h-screen bg-[#0b0e11] text-white">
+      <ToastContainer />
+      
       {/* 顶部导航栏 */}
       <header className="bg-[#131722] border-b border-white/5 px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
@@ -239,11 +173,14 @@ const Publisher: React.FC = () => {
               <h1 className="text-xl font-black bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                 PUBLISHER TERMINAL
               </h1>
-              <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">
-                {pubAddress.slice(0, 6)}...{pubAddress.slice(-4)}
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">
+                  {pubAddress.slice(0, 6)}...{pubAddress.slice(-4)}
+                </p>
+                <span className="text-[8px] bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded-full uppercase">Demo</span>
+              </div>
             </div>
-            {/* 钱包余额显示 */}
+            {/* Mock 钱包余额显示 */}
             <div className="flex items-center gap-4 px-4 py-2 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 border border-emerald-500/20 rounded-xl">
               <div className="text-center">
                 <p className="text-[10px] text-emerald-400/70 uppercase tracking-wider">CFX 余额</p>
@@ -302,10 +239,9 @@ const Publisher: React.FC = () => {
         {/* === 销量总览 Tab === */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
-            {/* 统计卡片 */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-gradient-to-br from-blue-600/20 to-blue-800/10 border border-blue-500/20 rounded-2xl p-6">
-                <p className="text-blue-400 text-xs uppercase tracking-wider mb-1">总销量 (NFT Minted)</p>
+                <p className="text-blue-400 text-xs uppercase tracking-wider mb-1">总销量 (Mock)</p>
                 <p className="text-4xl font-black text-white">{totalSales.toLocaleString()}</p>
               </div>
               <div className="bg-gradient-to-br from-cyan-600/20 to-cyan-800/10 border border-cyan-500/20 rounded-2xl p-6">
@@ -318,10 +254,10 @@ const Publisher: React.FC = () => {
               </div>
             </div>
 
-            {/* 图书销量表格 */}
             <div className="bg-[#131722] border border-white/5 rounded-2xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-white/5">
-                <h2 className="text-sm font-bold text-white">📖 图书销量排行</h2>
+              <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center">
+                <h2 className="text-sm font-bold text-white">📖 图书销量排行 (Mock)</h2>
+                <span className="text-[10px] bg-cyan-500/20 text-cyan-400 px-2 py-1 rounded-full uppercase">Demo Data</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -332,49 +268,27 @@ const Publisher: React.FC = () => {
                       <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">书名</th>
                       <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">作者</th>
                       <th className="px-4 py-3 text-right text-[10px] font-bold text-slate-400 uppercase">销量</th>
-                      <th className="px-4 py-3 text-center text-[10px] font-bold text-slate-400 uppercase">合约</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {bookSales.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500 text-sm">
-                          暂无图书数据，请先上架图书
+                    {bookSales.map((book, idx) => (
+                      <tr key={book.address} className="hover:bg-white/5 transition-colors">
+                        <td className="px-4 py-4">
+                          <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
+                            idx === 0 ? 'bg-yellow-500/20 text-yellow-400' :
+                            idx === 1 ? 'bg-slate-400/20 text-slate-300' :
+                            idx === 2 ? 'bg-orange-500/20 text-orange-400' :
+                            'bg-white/5 text-slate-500'
+                          }`}>
+                            {idx + 1}
+                          </span>
                         </td>
+                        <td className="px-4 py-4 font-mono text-cyan-400 text-sm">{book.symbol}</td>
+                        <td className="px-4 py-4 text-white text-sm">{book.name}</td>
+                        <td className="px-4 py-4 text-slate-400 text-sm">{book.author}</td>
+                        <td className="px-4 py-4 text-right font-mono text-lg text-green-400">{book.sales.toLocaleString()}</td>
                       </tr>
-                    ) : (
-                      bookSales.map((book, idx) => (
-                        <tr key={book.address} className="hover:bg-white/5 transition-colors">
-                          <td className="px-4 py-4">
-                            <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
-                              idx === 0 ? 'bg-yellow-500/20 text-yellow-400' :
-                              idx === 1 ? 'bg-slate-400/20 text-slate-300' :
-                              idx === 2 ? 'bg-orange-500/20 text-orange-400' :
-                              'bg-white/5 text-slate-500'
-                            }`}>
-                              {idx + 1}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4 font-mono text-cyan-400 text-sm">{book.symbol}</td>
-                          <td className="px-4 py-4 text-white text-sm">{book.name}</td>
-                          <td className="px-4 py-4 text-slate-400 text-sm">{book.author}</td>
-                          <td className="px-4 py-4 text-right font-mono text-lg text-green-400">{book.sales.toLocaleString()}</td>
-                          <td className="px-4 py-4 text-center">
-                            <a 
-                              href={book.explorerUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded-lg text-xs text-purple-400 hover:text-purple-300 transition-all"
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                              </svg>
-                              查看
-                            </a>
-                          </td>
-                        </tr>
-                      ))
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -386,7 +300,13 @@ const Publisher: React.FC = () => {
         {activeTab === 'addBook' && (
           <div className="max-w-lg mx-auto">
             <div className="bg-[#131722] border border-white/5 rounded-2xl p-8">
-              <h2 className="text-lg font-bold text-white mb-6">📚 部署新书 NFT 合约</h2>
+              <h2 className="text-lg font-bold text-white mb-6">📚 部署新书 NFT 合约 (Mock)</h2>
+              
+              {error && (
+                <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                  <p className="text-red-400 text-xs">{error}</p>
+                </div>
+              )}
               
               <div className="space-y-4">
                 <div>
@@ -411,42 +331,26 @@ const Publisher: React.FC = () => {
                   <label className="block text-xs text-slate-400 mb-2 uppercase">书籍代码 (Symbol)</label>
                   <input 
                     placeholder="例：BLOCKCHAIN" 
-                    className="w-full bg-[#0b0e11] border border-white/10 rounded-xl px-4 py-3 text-sm font-mono outline-none focus:border-cyan-500 transition-colors"
+                    className="w-full bg-[#0b0e11] border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-cyan-500 transition-colors uppercase"
                     value={symbol} 
                     onChange={(e) => setSymbol(e.target.value.toUpperCase())}
                   />
                 </div>
-
-                {showRechargeGuide && (
-                  <div className="p-4 bg-orange-500/10 border border-orange-500/20 rounded-xl text-sm text-orange-300">
-                    ⚠️ {error}
-                  </div>
-                )}
-
-                {error && !showRechargeGuide && (
-                  <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-300">
-                    ❌ {error}
-                  </div>
-                )}
-
-                {contractAddr && (
-                  <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-xl">
-                    <p className="text-green-400 text-sm font-medium">✅ 合约部署成功</p>
-                    <p className="text-green-300/70 text-xs font-mono mt-1 break-all">{contractAddr}</p>
-                  </div>
-                )}
-
-                <button 
+                
+                <button
                   onClick={handleDeployContract}
-                  disabled={opLoading || !!contractAddr}
-                  className={`w-full py-4 rounded-xl text-sm font-bold transition-all ${
-                    contractAddr 
-                      ? 'bg-green-500/20 text-green-400 cursor-default' 
-                      : 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white hover:from-blue-500 hover:to-cyan-500'
-                  }`}
+                  disabled={opLoading}
+                  className="w-full mt-4 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl font-bold text-sm uppercase tracking-widest hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 transition-all"
                 >
-                  {opLoading ? '处理中...' : contractAddr ? '✓ 合约已部署' : '部署书籍合约 (需持有 10 CFX)'}
+                  {opLoading ? '模拟部署中...' : '部署合约 (Mock)'}
                 </button>
+                
+                {contractAddr && (
+                  <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 rounded-xl">
+                    <p className="text-green-400 text-xs mb-2">✓ 合约部署成功 (Mock)</p>
+                    <p className="text-[10px] font-mono text-gray-400 break-all">{contractAddr}</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -456,46 +360,46 @@ const Publisher: React.FC = () => {
         {activeTab === 'qrcode' && (
           <div className="max-w-lg mx-auto">
             <div className="bg-[#131722] border border-white/5 rounded-2xl p-8">
-              <h2 className="text-lg font-bold text-white mb-6">🔗 批量生成激活码</h2>
+              <h2 className="text-lg font-bold text-white mb-6">🔗 批量生成二维码 (Mock)</h2>
               
-              {!contractAddr ? (
-                <div className="text-center py-8">
-                  <p className="text-slate-400 mb-4">请先在「新增图书」中部署合约</p>
-                  <button 
-                    onClick={() => setActiveTab('addBook')}
-                    className="px-6 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg text-sm"
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-2 uppercase">选择已部署的书籍合约</label>
+                  <select 
+                    className="w-full bg-[#0b0e11] border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-cyan-500"
+                    value={contractAddr || ''}
+                    onChange={(e) => setContractAddr(e.target.value)}
                   >
-                    前往部署
-                  </button>
+                    <option value="">-- 选择合约 --</option>
+                    {bookSales.map(book => (
+                      <option key={book.address} value={book.address}>
+                        {book.symbol} - {book.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-xl">
-                    <p className="text-cyan-400 text-xs uppercase mb-1">当前合约地址</p>
-                    <p className="text-white font-mono text-sm break-all">{contractAddr}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-2 uppercase">生成数量 (1-500)</label>
-                    <input 
-                      type="number" 
-                      min={1}
-                      max={500}
-                      value={count}
-                      onChange={(e) => setCount(Math.min(500, Math.max(1, parseInt(e.target.value) || 1)))}
-                      className="w-full bg-[#0b0e11] border border-white/10 rounded-xl px-4 py-4 text-3xl font-mono text-center outline-none focus:border-cyan-500"
-                    />
-                  </div>
-
-                  <button 
-                    onClick={handleGenerateBatch}
-                    disabled={opLoading}
-                    className="w-full py-4 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold text-sm hover:from-purple-500 hover:to-pink-500 transition-all"
-                  >
-                    {opLoading ? '生成中...' : `生成 ${count} 个二维码 并下载 ZIP`}
-                  </button>
+                
+                <div>
+                  <label className="block text-xs text-slate-400 mb-2 uppercase">生成数量</label>
+                  <input 
+                    type="number"
+                    placeholder="100" 
+                    className="w-full bg-[#0b0e11] border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-cyan-500"
+                    value={count} 
+                    onChange={(e) => setCount(parseInt(e.target.value) || 100)}
+                    min={1}
+                    max={10000}
+                  />
                 </div>
-              )}
+                
+                <button
+                  onClick={handleGenerateBatch}
+                  disabled={opLoading || !contractAddr}
+                  className="w-full mt-4 py-4 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-xl font-bold text-sm uppercase tracking-widest hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 transition-all"
+                >
+                  {opLoading ? '生成中...' : `生成 ${count} 个二维码 (Mock)`}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -503,56 +407,25 @@ const Publisher: React.FC = () => {
         {/* === 热力分析 Tab === */}
         {activeTab === 'analytics' && (
           <div className="space-y-6">
-            {/* 地区销量排行 */}
-            <div className="bg-[#131722] border border-white/5 rounded-2xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-white/5">
-                <h2 className="text-sm font-bold text-white">🏆 地区读者排行榜</h2>
-              </div>
-              <div className="p-6">
-                {regionRanks.length === 0 ? (
-                  <p className="text-center text-slate-500 py-8">暂无地区数据</p>
-                ) : (
-                  <div className="space-y-3">
-                    {regionRanks.map((r, idx) => (
-                      <div key={r.region} className="flex items-center gap-4">
-                        <span className={`w-8 h-8 flex items-center justify-center rounded-full text-sm font-bold ${
-                          idx === 0 ? 'bg-yellow-500 text-black' :
-                          idx === 1 ? 'bg-slate-400 text-black' :
-                          idx === 2 ? 'bg-orange-600 text-white' :
-                          'bg-white/10 text-slate-400'
-                        }`}>
-                          {idx + 1}
-                        </span>
-                        <div className="flex-1">
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="text-white font-medium">{r.region}</span>
-                            <span className="text-cyan-400 font-mono">{r.count.toLocaleString()} 人</span>
-                          </div>
-                          <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all"
-                              style={{ width: `${(r.count / (regionRanks[0]?.count || 1)) * 100}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+            <div className="bg-[#131722] border border-white/5 rounded-2xl p-6">
+              <h2 className="text-sm font-bold text-white mb-4">🗺️ 地区读者分布 (Mock)</h2>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {regionRanks.map((region, idx) => (
+                  <div key={region.region} className="bg-white/5 rounded-xl p-4 text-center">
+                    <p className="text-[10px] text-slate-500 uppercase mb-1">#{idx + 1}</p>
+                    <p className="text-sm font-bold text-white">{region.region}</p>
+                    <p className="text-lg font-black text-cyan-400">{region.count}</p>
                   </div>
-                )}
+                ))}
               </div>
             </div>
-
-            {/* 热力地图入口 */}
-            <div className="bg-gradient-to-br from-cyan-900/30 to-blue-900/30 border border-cyan-500/20 rounded-2xl p-8 text-center">
-              <h3 className="text-xl font-bold text-white mb-2">🌍 全球读者热力地图</h3>
-              <p className="text-slate-400 text-sm mb-6">可视化查看全球读者分布情况</p>
-              <button 
-                onClick={() => navigate('/Heatmap')}
-                className="px-8 py-3 bg-cyan-500 text-black font-bold rounded-xl hover:bg-cyan-400 transition-colors"
-              >
-                打开热力地图
-              </button>
-            </div>
+            
+            <button
+              onClick={() => navigate('/Heatmap')}
+              className="w-full py-4 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border border-cyan-500/30 rounded-xl font-bold text-cyan-400 hover:from-cyan-500/30 hover:to-blue-500/30 transition-all"
+            >
+              查看完整热力图 →
+            </button>
           </div>
         )}
       </main>

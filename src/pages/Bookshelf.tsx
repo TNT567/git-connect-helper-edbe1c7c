@@ -1,15 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-
-// 初始数据
-const INITIAL_TICKERS = [
-  { symbol: "BTC-WP", name: "Bitcoin Whitepaper", price: 21000, address: "btc", author: "Satoshi Nakamoto", change: "+5.4%" },
-  { symbol: "ETH-YP", name: "Ethereum Yellowpaper", price: 15500, address: "eth", author: "Vitalik Buterin", change: "+2.1%" },
-  { symbol: "GHOST", name: "The Ghost in the Wires", price: 3070, address: "mitnick", author: "Kevin Mitnick", change: "-0.8%" },
-  { symbol: "SOV-I", name: "The Sovereign Individual", price: 5400, address: "sov", author: "J.D. Davidson", change: "+12.5%" },
-  { symbol: "BLACK", name: "The Black Swan", price: 6800, address: "black", author: "Nassim Taleb", change: "+4.2%" }
-];
+import { MOCK_BOOKS, MockBook } from '../data/mockData';
+import { ScanVerifyModal } from '../components/ScanVerifyModal';
+import { BettingModal } from '../components/BettingModal';
+import { ToastContainer } from '../components/ui/CyberpunkToast';
 
 // 语言选项配置
 const LANGUAGES = [
@@ -23,24 +18,33 @@ const LANGUAGES = [
 export default function Bookshelf() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const [tickers, setTickers] = useState(INITIAL_TICKERS);
+  
+  // 使用 Mock 数据
+  const [tickers, setTickers] = useState<MockBook[]>(MOCK_BOOKS);
   const [lastUpdatedIndex, setLastUpdatedIndex] = useState<number | null>(null);
+  
+  // Modal 状态
+  const [showScanModal, setShowScanModal] = useState(false);
+  const [showBettingModal, setShowBettingModal] = useState(false);
+  const [selectedBook, setSelectedBook] = useState<MockBook | null>(null);
 
-  // 模拟“终焉大盘”实时波动逻辑
+  // 模拟"终焉大盘"实时波动逻辑
   useEffect(() => {
     const interval = setInterval(() => {
       const randomIndex = Math.floor(Math.random() * tickers.length);
       
       setTickers(prev => prev.map((item, idx) => {
         if (idx === randomIndex) {
-          const increment = Math.floor(Math.random() * 5) + 1;
-          const newPrice = item.price + increment;
+          const increment = Math.floor(Math.random() * 50) + 1;
+          const newSales = item.sales + increment;
           const currentChange = parseFloat(item.change);
-          const newChangeVal = (currentChange + (Math.random() * 0.05)).toFixed(2);
+          const newChangeVal = (currentChange + (Math.random() * 0.1 - 0.02)).toFixed(2);
           
           return { 
             ...item, 
-            price: newPrice, 
+            sales: newSales,
+            currentPrice: newSales,
+            predictionPool: item.predictionPool + Math.floor(Math.random() * 100),
             change: `${parseFloat(newChangeVal) > 0 ? '+' : ''}${newChangeVal}%` 
           };
         }
@@ -65,16 +69,47 @@ export default function Bookshelf() {
     }
   };
 
+  const handleBookClick = (book: MockBook) => {
+    setSelectedBook(book);
+    navigate(`/book/${book.id}`);
+  };
+
+  const handleBetClick = (e: React.MouseEvent, book: MockBook) => {
+    e.stopPropagation();
+    setSelectedBook(book);
+    setShowBettingModal(true);
+  };
+
+  const handleBetPlaced = (amount: number, newPool: number) => {
+    if (selectedBook) {
+      setTickers(prev => prev.map(book => 
+        book.id === selectedBook.id 
+          ? { ...book, predictionPool: newPool }
+          : book
+      ));
+    }
+  };
+
   return (
     <div style={styles.container}>
+      <ToastContainer />
+      
       {/* 顶部行情跑马灯与多语言切换组 */}
       <div style={styles.tickerBar}>
         <div style={styles.tickerContent}>
-          <span style={{ color: '#00ffad', fontWeight: 'bold' }}>● {t('market_status')}</span>
+          <span style={{ color: '#00ffad', fontWeight: 'bold' }}>● {t('market_status') || 'MARKET LIVE'}</span>
           <span style={styles.divider}>|</span>
-          <span>{t('network')}</span>
+          <span>{t('network') || 'DEMO MODE'}</span>
           <span style={styles.divider}>|</span>
-          <span>{t('index')}: <span style={{color: '#fff'}}>{(tickers.reduce((acc, curr) => acc + curr.price, 0) / 10).toFixed(2)}</span></span>
+          <span>{t('index') || 'INDEX'}: <span style={{color: '#fff'}}>{(tickers.reduce((acc, curr) => acc + curr.sales, 0) / 10000).toFixed(2)}K</span></span>
+          
+          {/* 扫码按钮 */}
+          <button
+            onClick={() => setShowScanModal(true)}
+            style={styles.scanButton}
+          >
+            📱 Scan QR
+          </button>
           
           {/* 语言切换按钮组 */}
           <div style={styles.langButtonGroup}>
@@ -103,7 +138,10 @@ export default function Bookshelf() {
               {renderTitle()}{' '}
               <span style={styles.terminalText}>TERMINAL</span>
             </h1>
-            <p style={styles.subtitle}>{t('subtitle')}</p>
+            <p style={styles.subtitle}>{t('subtitle') || 'Real-time Book Sales & Prediction Market'}</p>
+            <div style={styles.demoBadge}>
+              🔧 DEMO MODE - No Backend Required
+            </div>
           </div>
         </header>
 
@@ -111,28 +149,30 @@ export default function Bookshelf() {
           <table style={styles.table}>
             <thead>
               <tr style={styles.theadRow}>
-                <th style={styles.th}>{t('th_asset')}</th>
-                <th style={styles.th}>{t('th_title')}</th>
-                <th style={{ ...styles.th, textAlign: 'right' }}>{t('th_sales')}</th>
-                <th style={{ ...styles.th, textAlign: 'right' }}>{t('th_chg')}</th>
-                <th style={{ ...styles.th, textAlign: 'center' }}>{t('action_trade')}</th>
+                <th style={styles.th}>{t('th_asset') || 'ASSET'}</th>
+                <th style={styles.th}>{t('th_title') || 'TITLE'}</th>
+                <th style={{ ...styles.th, textAlign: 'right' }}>{t('th_sales') || 'SALES'}</th>
+                <th style={{ ...styles.th, textAlign: 'right' }}>POOL</th>
+                <th style={{ ...styles.th, textAlign: 'right' }}>{t('th_chg') || 'CHG'}</th>
+                <th style={{ ...styles.th, textAlign: 'center' }}>STATUS</th>
+                <th style={{ ...styles.th, textAlign: 'center' }}>{t('action_trade') || 'ACTION'}</th>
               </tr>
             </thead>
             <tbody>
               {tickers.map((book, index) => (
                 <tr 
-                  key={book.symbol} 
+                  key={book.id} 
                   style={{
                     ...styles.tr,
-                    backgroundColor: lastUpdatedIndex === index ? 'rgba(131, 58, 180, 0.1)' : 'transparent',
+                    backgroundColor: lastUpdatedIndex === index ? 'rgba(131, 58, 180, 0.15)' : 'transparent',
                   }}
-                  onClick={() => navigate(`/book/${book.address}`)}
+                  onClick={() => handleBookClick(book)}
                 >
                   <td style={styles.td}>
                     <div style={styles.symbolBadge}>{book.symbol}</div>
                   </td>
                   <td style={styles.td}>
-                    <div style={styles.bookName}>{book.name}</div>
+                    <div style={styles.bookName}>{book.title}</div>
                     <div style={styles.bookAuthor}>{book.author}</div>
                   </td>
                   <td style={{ 
@@ -141,7 +181,10 @@ export default function Bookshelf() {
                     color: lastUpdatedIndex === index ? '#00ffad' : '#f0f3fa',
                     transition: 'color 0.3s ease'
                   }}>
-                    {book.price.toLocaleString()}
+                    {book.sales.toLocaleString()}
+                  </td>
+                  <td style={{ ...styles.td, ...styles.numeric, color: '#a855f7' }}>
+                    ${(book.predictionPool / 1000).toFixed(1)}K
                   </td>
                   <td style={{ 
                     ...styles.td, 
@@ -151,7 +194,28 @@ export default function Bookshelf() {
                     {book.change}
                   </td>
                   <td style={{ ...styles.td, textAlign: 'center' }}>
-                    <button style={styles.actionBtn}>{t('action_trade')}</button>
+                    <span style={{
+                      ...styles.statusBadge,
+                      backgroundColor: book.verificationStatus === 'Verified Genuine' 
+                        ? 'rgba(34, 197, 94, 0.2)' 
+                        : 'rgba(239, 68, 68, 0.2)',
+                      color: book.verificationStatus === 'Verified Genuine' 
+                        ? '#22c55e' 
+                        : '#ef4444',
+                      borderColor: book.verificationStatus === 'Verified Genuine'
+                        ? 'rgba(34, 197, 94, 0.3)'
+                        : 'rgba(239, 68, 68, 0.3)'
+                    }}>
+                      {book.verificationStatus === 'Verified Genuine' ? '✓' : '⚠️'}
+                    </span>
+                  </td>
+                  <td style={{ ...styles.td, textAlign: 'center' }}>
+                    <button 
+                      style={styles.actionBtn}
+                      onClick={(e) => handleBetClick(e, book)}
+                    >
+                      PREDICT
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -163,6 +227,21 @@ export default function Bookshelf() {
       {/* 视觉特效层 */}
       <div style={styles.scanline}></div>
       <div style={styles.gridOverlay}></div>
+
+      {/* Modals */}
+      <ScanVerifyModal 
+        isOpen={showScanModal}
+        onClose={() => setShowScanModal(false)}
+      />
+      
+      {selectedBook && (
+        <BettingModal
+          isOpen={showBettingModal}
+          onClose={() => setShowBettingModal(false)}
+          book={selectedBook}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
     </div>
   );
 }
@@ -187,8 +266,21 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tickerContent: { display: 'flex', gap: '20px', alignItems: 'center' },
   divider: { color: '#333' },
-  langButtonGroup: {
+  scanButton: {
+    background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+    border: 'none',
+    color: '#fff',
+    padding: '6px 16px',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    borderRadius: '6px',
+    cursor: 'pointer',
     marginLeft: 'auto',
+    marginRight: '10px',
+    textTransform: 'uppercase',
+    letterSpacing: '1px'
+  },
+  langButtonGroup: {
     display: 'flex',
     gap: '4px',
     backgroundColor: '#0a0a0a',
@@ -206,7 +298,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.2s ease',
     fontWeight: 'bold',
   },
-  main: { padding: '40px 20px', maxWidth: '1100px', margin: '0 auto', position: 'relative', zIndex: 1 },
+  main: { padding: '40px 20px', maxWidth: '1200px', margin: '0 auto', position: 'relative', zIndex: 1 },
   header: { marginBottom: '40px' },
   title: { color: '#fff', fontSize: '32px', fontWeight: 900, margin: 0, letterSpacing: '-1.5px' },
   terminalText: { 
@@ -215,30 +307,56 @@ const styles: Record<string, React.CSSProperties> = {
     fontStyle: 'italic'
   },
   subtitle: { fontSize: '14px', color: '#444', margin: '5px 0 0 0', fontWeight: 400 },
+  demoBadge: {
+    display: 'inline-block',
+    marginTop: '10px',
+    padding: '6px 12px',
+    backgroundColor: 'rgba(34, 211, 238, 0.1)',
+    border: '1px solid rgba(34, 211, 238, 0.3)',
+    borderRadius: '6px',
+    fontSize: '10px',
+    color: '#22d3ee',
+    fontWeight: 'bold',
+    letterSpacing: '1px'
+  },
   tableContainer: {
     backgroundColor: 'rgba(10, 10, 10, 0.95)',
     backdropFilter: 'blur(15px)',
     border: '1px solid #1a1a1a',
-    borderRadius: '2px',
+    borderRadius: '8px',
+    overflow: 'hidden'
   },
   table: { width: '100%', borderCollapse: 'collapse' },
-  th: { padding: '15px 20px', color: '#333', fontSize: '10px', textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid #1a1a1a' },
-  td: { padding: '15px 20px', borderBottom: '1px solid #0f0f0f' },
+  theadRow: { backgroundColor: 'rgba(255,255,255,0.02)' },
+  th: { padding: '15px 16px', color: '#444', fontSize: '10px', textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid #1a1a1a', letterSpacing: '1px' },
+  td: { padding: '16px', borderBottom: '1px solid #0f0f0f' },
   tr: { transition: 'background-color 0.4s ease', cursor: 'pointer' },
-  symbolBadge: { color: '#833ab4', fontWeight: 'bold', border: '1px solid #1a1a1a', padding: '2px 6px', display: 'inline-block' },
-  bookName: { color: '#efefef', fontWeight: 600, fontSize: '15px' },
-  bookAuthor: { color: '#444', fontSize: '12px' },
+  symbolBadge: { color: '#833ab4', fontWeight: 'bold', border: '1px solid #2a2a2a', padding: '4px 8px', display: 'inline-block', borderRadius: '4px', fontSize: '11px' },
+  bookName: { color: '#efefef', fontWeight: 600, fontSize: '14px' },
+  bookAuthor: { color: '#555', fontSize: '11px', marginTop: '2px' },
   numeric: { fontFamily: '"Roboto Mono", monospace', textAlign: 'right' },
+  statusBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    border: '1px solid',
+    fontSize: '12px'
+  },
   actionBtn: {
     backgroundColor: 'transparent',
     border: '1px solid #833ab4',
     color: '#833ab4',
-    padding: '4px 12px',
+    padding: '6px 16px',
     fontSize: '10px',
     cursor: 'pointer',
     fontWeight: 'bold',
-    borderRadius: '1px',
-    transition: 'all 0.2s ease'
+    borderRadius: '4px',
+    transition: 'all 0.2s ease',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px'
   },
   scanline: {
     width: '100%', height: '2px', zIndex: 5, background: 'rgba(131, 58, 180, 0.05)',
