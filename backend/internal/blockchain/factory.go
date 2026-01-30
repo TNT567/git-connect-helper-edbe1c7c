@@ -1,68 +1,143 @@
-package blockchain
+package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
+	"os"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto" // 必须导入 crypto 来处理地址生成
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/redis/go-redis/v9"
 )
 
-// BookFactory 结构体
-type BookFactory struct {
+type FactoryHandler struct {
 	RDB    *redis.Client
 	Client *ethclient.Client
 }
 
-// CheckBalanceAndDeploy 执行链上余额检查与大盘索引写入 [cite: 2026-01-13]
-func (f *BookFactory) CheckBalanceAndDeploy(ctx context.Context, pubAddr string, bookName string, symbol string) (string, error) {
-	// 1. 规范化出版社地址
-	address := common.HexToAddress(strings.ToLower(pubAddr))
+// DeployBook 处理前端 /api/v1/factory/deploy-book 的请求
+func (h *FactoryHandler) DeployBook(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CodeHash   string `json:"codeHash"`
+		BookName   string `json:"bookName"`
+		AuthorName string `json:"authorName"`
+		Symbol     string `json:"symbol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendJSON(w, 400, map[string]interface{}{"ok": false, "error": "无效的参数格式"})
+		return
+	}
 
-	// 2. 调用以太坊客户端检查 Native Token (CFX) 余额
-	balance, err := f.Client.BalanceAt(ctx, address, nil)
+	// 1. 从 Redis 获取出版社私钥（从之前 main.go 逻辑平移）
+	pubData, err := h.RDB.HGetAll(context.Background(), "vault:bind:"+req.CodeHash).Result()
+	if err != nil || len(pubData) == 0 {
+		h.sendJSON(w, 403, map[string]interface{}{"ok": false, "error": "鉴权失败：找不到该出版社的密钥信息"})
+		return
+	}
+
+	privateKeyHex := pubData["private_key"]
+	publisherAddress := pubData["address"]
+	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(privateKeyHex, "0x"))
 	if err != nil {
-		return "", fmt.Errorf("链上通信失败: %v", err)
+		h.sendJSON(w, 500, map[string]interface{}{"ok": false, "error": "出版社私钥格式错误"})
+		return
 	}
 
-	// 3. 设定 10 CFX 的理智门槛 (10 * 10^18 Wei)
-	threshold := new(big.Int).Mul(big.NewInt(10), big.NewInt(1e18))
-
-	// 4. 余额不足拦截逻辑
-	if balance.Cmp(threshold) < 0 {
-		actualBalance := new(big.Float).Quo(new(big.Float).SetInt(balance), big.NewFloat(1e18))
-		return "", fmt.Errorf("余额不足 (当前: %.2f CFX)。请先向钱包 %s 充值，上架书籍需至少持有 10 CFX 服务预留金", actualBalance, pubAddr)
+	// 2. 检查余额 (至少需要 2 CFX: 1作为部署费, 1作为Gas预留)
+	pubAddr := common.HexToAddress(publisherAddress)
+	balance, _ := h.Client.BalanceAt(context.Background(), pubAddr, nil)
+	minReq := new(big.Int).Mul(big.NewInt(2), big.NewInt(1e18))
+	if balance.Cmp(minReq) < 0 {
+		h.sendJSON(w, 400, map[string]interface{}{"ok": false, "error": "余额不足，部署需约 2 CFX"})
+		return
 	}
 
-	// 5. 模拟生成唯一的合约地址
-	// 使用 Keccak256 对“出版社地址+书名”进行哈希，确保确定性
-	dataToHash := append(address.Bytes(), []byte(bookName)...)
-	mockHash := crypto.Keccak256(dataToHash)
-	newContractAddr := common.BytesToAddress(mockHash[12:]).Hex() // 截取后20字节作为地址
-
-	// 6. 写入 Redis 同步至“终焉大盘”
-	// 格式：Symbol:BookName
-	bookInfo := fmt.Sprintf("%s:%s", symbol, bookName)
+	// 3. 构造 ABI 编码 (对接 BookFactory.sol)
+	// 参数: string name, string symbol, string author, string baseURI, address relayer
+	factoryAddr := os.Getenv("FACTORY_ADDR")
+	if factoryAddr == "" {
+		factoryAddr = "0xe0c25B2D0C0bB524d0561496eb72816368986Ca7"
+	}
 	
-	// 写入书籍详情 Hash
-	err = f.RDB.HSet(ctx, "vault:books:registry", newContractAddr, bookInfo).Err()
+	// 这里使用之前调试成功的 ABI 手动编码逻辑
+	callData := encodeDeployBookData(req.BookName, req.Symbol, req.AuthorName, "https://arweave.net/metadata", common.Address{})
+
+	// 4. 发送交易
+	nonce, _ := h.Client.PendingNonceAt(context.Background(), pubAddr)
+	gasPrice, _ := h.Client.SuggestGasPrice(context.Background())
+	deployFee := new(big.Int).Mul(big.NewInt(1), big.NewInt(1e18)) // 1 CFX 部署费
+
+	tx := types.NewTransaction(
+		nonce,
+		common.HexToAddress(factoryAddr),
+		deployFee,
+		uint64(6000000), // 【关键】高 Gas Limit 确保部署成功
+		gasPrice,
+		callData,
+	)
+
+	// 使用 EIP-155 签名 (ChainID 71)
+	chainID := big.NewInt(71) 
+	signedTx, _ := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+	
+	err = h.Client.SendTransaction(context.Background(), signedTx)
 	if err != nil {
-		return "", fmt.Errorf("Redis 详情写入失败: %v", err)
+		h.sendJSON(w, 500, map[string]interface{}{"ok": false, "error": "上链失败: " + err.Error()})
+		return
 	}
 
-	// 初始化销量大盘 ZSet，分数为 0
-	err = f.RDB.ZAdd(ctx, "vault:tickers:sales", redis.Z{
-		Score:  0,
-		Member: newContractAddr,
-	}).Err()
-	if err != nil {
-		return "", fmt.Errorf("大盘排名初始化失败: %v", err)
+	h.sendJSON(w, 200, map[string]interface{}{
+		"ok": true, 
+		"txHash": signedTx.Hash().Hex(),
+		"message": "书籍部署交易已发出",
+	})
+}
+
+// 辅助函数：手动构造 ABI Data
+func encodeDeployBookData(name, symbol, author, uri string, relayer common.Address) []byte {
+	methodID := common.FromHex("7d9f6db5") // deployBook(string,string,string,string,address)
+	
+	encStr := func(s string) []byte {
+		b := []byte(s)
+		l := make([]byte, 32)
+		big.NewInt(int64(len(b))).FillBytes(l)
+		p := ((len(b) + 31) / 32) * 32
+		data := make([]byte, p)
+		copy(data, b)
+		return append(l, data...)
 	}
 
-	fmt.Printf("✅ [理智验证] 出版社 %s 余额充足，书籍 %s(%s) 已录入大盘\n", pubAddr, bookName, symbol)
-	return newContractAddr, nil
+	d1, d2, d3, d4 := encStr(name), encStr(symbol), encStr(author), encStr(uri)
+	hSize := 5 * 32 // 4个偏移量 + 1个地址
+	o1 := hSize
+	o2 := o1 + len(d1)
+	o3 := o2 + len(d2)
+	o4 := o3 + len(d3)
+
+	res := append([]byte{}, methodID...)
+	put := func(n int) {
+		b := make([]byte, 32)
+		big.NewInt(int64(n)).FillBytes(b)
+		res = append(res, b...)
+	}
+	put(o1); put(o2); put(o3); put(o4)
+
+	addrP := make([]byte, 32)
+	copy(addrP[12:], relayer.Bytes())
+	res = append(res, addrP...)
+	res = append(res, d1...); res = append(res, d2...); res = append(res, d3...); res = append(res, d4...)
+
+	return res
+}
+
+func (h *FactoryHandler) sendJSON(w http.ResponseWriter, code int, p interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(p)
 }
