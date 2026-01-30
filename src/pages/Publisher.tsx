@@ -7,7 +7,9 @@ interface BookSales {
   address: string;
   symbol: string;
   name: string;
+  author: string;
   sales: number;
+  explorerUrl: string;
 }
 
 // 地区排名数据结构
@@ -105,7 +107,10 @@ const Publisher: React.FC = () => {
           address: t.address || '',
           symbol: t.symbol || 'N/A',
           name: t.name?.zh || t.name?.en || '未知书籍',
-          sales: t.sales || 0
+          author: t.author?.zh || t.author?.en || '未知作者',
+          sales: t.sales || 0,
+          // Conflux eSpace Testnet 区块链浏览器链接
+          explorerUrl: `https://evmtestnet.confluxscan.io/address/${t.address}`
         }));
         setBookSales(salesData);
         setTotalSales(salesData.reduce((acc, b) => acc + b.sales, 0));
@@ -314,23 +319,25 @@ const Publisher: React.FC = () => {
                 <table className="w-full">
                   <thead className="bg-white/5">
                     <tr>
-                      <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">排名</th>
-                      <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">代码</th>
-                      <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">书名</th>
-                      <th className="px-6 py-3 text-right text-[10px] font-bold text-slate-400 uppercase">销量</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">排名</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">代码</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">书名</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase">作者</th>
+                      <th className="px-4 py-3 text-right text-[10px] font-bold text-slate-400 uppercase">销量</th>
+                      <th className="px-4 py-3 text-center text-[10px] font-bold text-slate-400 uppercase">合约</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {bookSales.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="px-6 py-8 text-center text-slate-500 text-sm">
+                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500 text-sm">
                           暂无图书数据，请先上架图书
                         </td>
                       </tr>
                     ) : (
                       bookSales.map((book, idx) => (
                         <tr key={book.address} className="hover:bg-white/5 transition-colors">
-                          <td className="px-6 py-4">
+                          <td className="px-4 py-4">
                             <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
                               idx === 0 ? 'bg-yellow-500/20 text-yellow-400' :
                               idx === 1 ? 'bg-slate-400/20 text-slate-300' :
@@ -340,9 +347,23 @@ const Publisher: React.FC = () => {
                               {idx + 1}
                             </span>
                           </td>
-                          <td className="px-6 py-4 font-mono text-cyan-400 text-sm">{book.symbol}</td>
-                          <td className="px-6 py-4 text-white text-sm">{book.name}</td>
-                          <td className="px-6 py-4 text-right font-mono text-lg text-green-400">{book.sales.toLocaleString()}</td>
+                          <td className="px-4 py-4 font-mono text-cyan-400 text-sm">{book.symbol}</td>
+                          <td className="px-4 py-4 text-white text-sm">{book.name}</td>
+                          <td className="px-4 py-4 text-slate-400 text-sm">{book.author}</td>
+                          <td className="px-4 py-4 text-right font-mono text-lg text-green-400">{book.sales.toLocaleString()}</td>
+                          <td className="px-4 py-4 text-center">
+                            <a 
+                              href={book.explorerUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded-lg text-xs text-purple-400 hover:text-purple-300 transition-all"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                              查看
+                            </a>
+                          </td>
                         </tr>
                       ))
                     )}
